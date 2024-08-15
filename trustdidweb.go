@@ -29,7 +29,7 @@ import (
 )
 
 const TDWMethodv1 = "did:tdw:1"
-const TDWMethodv03 = "did:tdw:0.1"
+const TDWMethodv03 = "did:tdw:0.3"
 
 type LogEntry struct {
 	VersionId   versionId `json:"versionId"`
@@ -569,6 +569,8 @@ func (log DIDLog) buildProof(version int, signer crypto.Signer) (Proof, error) {
 		return Proof{}, fmt.Errorf("failed to hash entry: %w", err)
 	}
 
+	fmt.Printf("input length: %d\n", len(input))
+
 	fmt.Printf("input: %s\n", base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(input))
 
 	// sign the entry
@@ -615,13 +617,21 @@ func (log DIDLog) hashLogVersion(version int, proof Proof, hashfn hash.Hash) ([]
 	logger().Debug("canonicalized did doc", "value", string(docData))
 	logger().Debug("canonicalized proof", "value", string(optionData))
 
-	dataHash := hashfn.Sum(docData)
-	optionsHash := hashfn.Sum(optionData)
+	hashfn.Reset()
+	hashfn.Write(docData)
+	dataHash := hashfn.Sum(nil)
+	hashfn.Reset()
+	hashfn.Write(optionData)
+	optionsHash := hashfn.Sum(nil)
+
+	fmt.Printf("dataHash: %x\n", dataHash)
+	fmt.Printf("optionsHash: %x\n", optionsHash)
 
 	logger().Debug("hash", "data", base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(dataHash[:]))
 	logger().Debug("hash", "options", base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(optionsHash[:]))
 
 	input := append(dataHash[:], optionsHash[:]...)
+	fmt.Printf("input: %x\n", input)
 	return input, nil
 }
 
@@ -659,6 +669,9 @@ func extractPubKey(verificationMethod string) (uint64, crypto.PublicKey, error) 
 
 	logger().Debug("verifyProof", "x", xStr)
 	logger().Debug("verifyProof", "y", yStr)
+
+	fmt.Printf("x: %s\n", xStr)
+	fmt.Printf("y: %s\n", yStr)
 
 	pubKey := &ecdsa.PublicKey{
 		Curve: curve,
@@ -770,7 +783,6 @@ func (log DIDLog) Verify() error {
 			}
 
 			proofValue := proof.ProofValue
-			proof.ProofValue = ""
 
 			// fmt.Printf("input: %s\n", base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(input))
 
@@ -780,8 +792,8 @@ func (log DIDLog) Verify() error {
 			}
 
 			// fmt.Printf("pubKey: X: %s, Y: %s\n", base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(pubKey.X.Bytes()), base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(pubKey.Y.Bytes()))
-			fmt.Printf("input: %s\n", base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(input))
-			fmt.Printf("signature: %s\n", base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(signature))
+			// fmt.Printf("input: %s\n", base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(input))
+			fmt.Printf("signature: %x\n", signature)
 
 			fmt.Printf("signature length: %d\n", len(signature))
 
@@ -792,16 +804,19 @@ func (log DIDLog) Verify() error {
 			// 	return fmt.Errorf("failed to parse signature: %w", err)
 			// }
 
-			// split the signature in half to get the s and r values
-			sBytes := signature[len(signature)/2:]
-			rBytes := signature[:len(signature)/2]
-			s := big.NewInt(0).SetBytes(sBytes)
-			r := big.NewInt(0).SetBytes(rBytes)
+			// split the signature in half to get the r and s values
+			r := big.NewInt(0).SetBytes(signature[:len(signature)/2])
+			s := big.NewInt(0).SetBytes(signature[len(signature)/2:])
 
 			// try both type of signature encoding
-			if !ecdsa.Verify(pubKey.(*ecdsa.PublicKey), input, r, s) &&
-				!ecdsa.VerifyASN1(pubKey.(*ecdsa.PublicKey), input, signature) {
-				return fmt.Errorf("failed to verify proof")
+			if !ecdsa.Verify(pubKey.(*ecdsa.PublicKey), input, r, s) {
+				// try the other way around:
+				r = big.NewInt(0).SetBytes(signature[len(signature)/2:])
+				s = big.NewInt(0).SetBytes(signature[:len(signature)/2])
+				if !ecdsa.Verify(pubKey.(*ecdsa.PublicKey), input, r, s) &&
+					!ecdsa.VerifyASN1(pubKey.(*ecdsa.PublicKey), input, signature) {
+					return fmt.Errorf("failed to verify proof")
+				}
 			}
 		}
 	}

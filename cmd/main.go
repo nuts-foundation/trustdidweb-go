@@ -17,7 +17,7 @@ func main() {
 	slog.SetDefault(slog.New(logHandler))
 
 	// Create a new TrustDIDWeb instance with a template and a crypto suite
-	tdw := trustdidweb.NewTrustDIDWeb("did:tdw:example.com:{SCID}", "ecdsa-jcs-2019")
+	tdw := trustdidweb.NewTrustDIDWeb("did:tdw:{SCID}:example.com:dids:{SCID}", "ecdsa-jcs-2019")
 
 	// Create a new signer
 	signer, err := tdw.NewSigner()
@@ -150,4 +150,31 @@ func main() {
 
 	areEqual := reflect.DeepEqual(doc, doc2)
 	fmt.Println("Are the documents equal?", areEqual)
+
+	doc2["service"] = append(doc2["service"].([]interface{}),
+		map[string]interface{}{
+			"id":              "did:tdw:example.com:123456789abcdefghi#service-2",
+			"type":            "Service",
+			"serviceEndpoint": "https://example.com/service/2",
+		})
+
+	// Update the log
+	log, err = tdw.Update(log, *params, doc2, signer)
+	if err != nil {
+		panic(err)
+	}
+
+	// compare the documents of the parsed log and the original log
+	doc3, err := log.Document()
+	if err != nil {
+		panic(err)
+	}
+	doc3Json, err := json.Marshal(doc3)
+	if err != nil {
+		panic(err)
+	}
+	(*jsontext.Value)(&doc3Json).Indent("", "  ")
+	fmt.Println("Updated Document")
+	fmt.Println(string(doc3Json))
+
 }
