@@ -35,14 +35,6 @@ const TDWMethodv03 = "did:tdw:0.3"
 const CRYPTO_SUITE_ECDSA_JCS_2019 = "ecdsa-jcs-2019"
 const CRYPTO_SUITE_EDDSA_JCS_2022 = "eddsa-jcs-2022"
 
-type LogEntry struct {
-	VersionId   versionId `json:"versionId"`
-	VersionTime time.Time `json:"versionTime"`
-	Params      LogParams `json:"params"`
-	DocState    docState  `json:"docState,omitempty"`
-	Proof       []Proof   `json:"proof,omitempty"`
-}
-
 type docState struct {
 	Value interface{} `json:"value,omitempty"`
 	Patch interface{} `json:"patch,omitempty"`
@@ -170,91 +162,6 @@ func (s EntryHash) Verify(data []byte) error {
 	return nil
 }
 
-// logLine is an intermidiate representation of a log entry for JSON marshalling
-type logLine []interface{}
-
-func (l *logLine) ToLogEntry() (LogEntry, error) {
-
-	type logLineStruct struct {
-		VersionID   interface{} `json:"versionId"`
-		VersionTime interface{} `json:"versionTime"`
-		Params      interface{} `json:"params"`
-		DocState    interface{} `json:"docState"`
-		Proof       interface{} `json:"proof"`
-	}
-
-	lls := logLineStruct{
-		VersionID:   (*l)[0],
-		VersionTime: (*l)[1],
-		Params:      (*l)[2],
-		DocState:    (*l)[3],
-		// Proof:       (*l)[4],
-	}
-
-	if len(*l) == 5 {
-		lls.Proof = (*l)[4]
-	} else {
-		lls.Proof = nil
-	}
-
-	lBytes, err := json.Marshal(lls)
-	if err != nil {
-		return LogEntry{}, err
-	}
-	entry := LogEntry{}
-	err = json.Unmarshal(lBytes, &entry)
-	if err != nil {
-		return LogEntry{}, err
-	}
-	return entry, nil
-}
-
-// MarshalJSONL returns the JSON-line representation of the log entry
-func (l LogEntry) MarshalJSONL() ([]byte, error) {
-	line := []interface{}{l.VersionId, l.VersionTime, l.Params, l.DocState}
-
-	if len(l.Proof) > 0 {
-		line = append(line, l.Proof)
-	}
-
-	b, err := json.Marshal(line)
-	if err != nil {
-		return nil, err
-	}
-	(*jsontext.Value)(&b).Canonicalize()
-	return b, nil
-}
-
-func (l *LogEntry) UnmarshalJSONL(b []byte) error {
-	line := logLine{}
-	// line := []interface{}{}
-	if err := json.Unmarshal(b, &line); err != nil {
-		return err
-	}
-
-	entry, err := line.ToLogEntry()
-	if err != nil {
-		return err
-	}
-
-	*l = entry
-	return nil
-}
-
-// LogParams represents the parameters of a log entry
-type LogParams struct {
-	Method        string   `json:"method"`
-	Scid          string   `json:"scid"`
-	UpdateKeys    []string `json:"updateKeys"`
-	Hash          string   `json:"-"`
-	Cryptosuite   string   `json:"cryptosuite,omitempty"`
-	Prerotation   bool     `json:"prerotation"`
-	NextKeyHashes []string `json:"nextKeyHashes"`
-	Moved         string   `json:"moved,omitempty"`
-	Deactivated   bool     `json:"deactivated,omitzero"`
-	TTL           int      `json:"ttl,omitzero"`
-}
-
 type DIDLog []LogEntry
 
 func (log DIDLog) MarshalText() ([]byte, error) {
@@ -347,23 +254,8 @@ func logger() *slog.Logger {
 	return slog.Default().WithGroup("trustdidweb")
 }
 
-type TrustDIDWeb struct {
-	// Template for the path of the did document (e.g. did:tdw:sub.domain.example/{SCID})
-	// Where the {SCID} placeholder will be replaced with the SCID of the first log entry
-	pathTemplate string
-	// one of the supported crypto suites (e.g., eddsa-jcs-2022)
-	cryptoSuite string
-}
-
-func NewTrustDIDWeb(pathTemplate, cryptoSuite string) *TrustDIDWeb {
-	return &TrustDIDWeb{
-		pathTemplate: pathTemplate,
-		cryptoSuite:  cryptoSuite,
-	}
-}
-
-func (t *TrustDIDWeb) renderPathTemplate(scid string) string {
-	return strings.ReplaceAll(t.pathTemplate, "{SCID}", scid)
+func renderPathTemplate(didTemplate, scid string) string {
+	return strings.ReplaceAll(didTemplate, "{SCID}", scid)
 }
 
 // Can be replaced with a function that returns the current time in a deterministic way
@@ -401,30 +293,6 @@ func encodePubKey(pubKey crypto.PublicKey) (string, error) {
 	return multibase.Encode(multibase.Base58BTC, multiCodecKey)
 }
 
-// NewParams returns the parameters for the first log entry
-// https://bcgov.github.io/trustdidweb/#didtdw-did-method-parameters
-func (t *TrustDIDWeb) NewParams(pubKeys []crypto.PublicKey, nextKeyHashes []string) (*LogParams, error) {
-	updateKeys := make([]string, len(pubKeys))
-	var err error
-	for i, pubKey := range pubKeys {
-		if updateKeys[i], err = encodePubKey(pubKey); err != nil {
-			return nil, fmt.Errorf("failed to encode public key: %w", err)
-		}
-	}
-	var prerotation bool
-	if len(nextKeyHashes) > 0 {
-		prerotation = true
-	}
-
-	return &LogParams{
-		Method:        TDWMethodv03,
-		Scid:          "{SCID}",
-		Prerotation:   prerotation,
-		UpdateKeys:    updateKeys,
-		NextKeyHashes: nextKeyHashes,
-	}, nil
-}
-
 func ParseLog(b []byte) (DIDLog, error) {
 	log := DIDLog{}
 	err := log.UnmarshalText(b)
@@ -434,16 +302,20 @@ func ParseLog(b []byte) (DIDLog, error) {
 // Create creates a new DIDLog with a single log entry
 // It calculates the SCID of the first log entry and replaces the placeholder in the path template
 // It signs the entry with the provided signer
-func (t *TrustDIDWeb) Create(params LogParams, signer crypto.Signer) (DIDLog, error) {
+func Create(didTemplate string, signer crypto.Signer, nextKeyhashes []string) (DIDLog, error) {
+	params, err := NewInitialParams([]crypto.PublicKey{signer.Public()}, nextKeyhashes)
+	if err != nil {
+		return nil, err
+	}
 
 	// set SCID to the placeholder value
 	scid := "{SCID}"
 
 	doc := map[string]interface{}{
-		"@context": []string{
+		"@context": []interface{}{
 			"https://www.w3.org/ns/did/v1", "https://w3id.org/security/multikey/v1",
 		},
-		"id": t.renderPathTemplate(scid),
+		"id": renderPathTemplate(didTemplate, scid),
 	}
 
 	params.Scid = scid
@@ -467,7 +339,7 @@ func (t *TrustDIDWeb) Create(params LogParams, signer crypto.Signer) (DIDLog, er
 	logger().Debug("create", "scid", scid)
 
 	// replace placeholders with the actual values containing the did string
-	le.DocState.Value.(map[string]interface{})["id"] = t.renderPathTemplate(scid)
+	le.DocState.Value.(map[string]interface{})["id"] = renderPathTemplate(didTemplate, scid)
 	le.Params.Scid = scid
 	le.VersionId = versionId
 
@@ -479,17 +351,16 @@ func (t *TrustDIDWeb) Create(params LogParams, signer crypto.Signer) (DIDLog, er
 
 	logger().Debug("create", "entry", le)
 
-	log := DIDLog{le}
-	proof, err := log.buildProof(1, signer)
+	proof, err := DIDLog{le}.buildProof(1, signer)
 	if err != nil {
 		return nil, err
 	}
-	log[0].Proof = []Proof{proof}
+	le.Proof = []Proof{proof}
 
-	return log, nil
+	return DIDLog{le}, nil
 }
 
-func (t *TrustDIDWeb) Update(log DIDLog, params LogParams, modifiedDoc map[string]interface{}, signer crypto.Signer) (DIDLog, error) {
+func Update(log DIDLog, params LogParams, modifiedDoc map[string]interface{}, signer crypto.Signer) (DIDLog, error) {
 
 	currentDoc, err := log.Document()
 	if err != nil {
@@ -540,15 +411,15 @@ func (t *TrustDIDWeb) Update(log DIDLog, params LogParams, modifiedDoc map[strin
 }
 
 // NewSigner returns the signer of the configured crypto suite
-func (t *TrustDIDWeb) NewSigner() (crypto.Signer, error) {
-	switch t.cryptoSuite {
+func NewSigner(cryptoSuite string) (crypto.Signer, error) {
+	switch cryptoSuite {
 	case CRYPTO_SUITE_ECDSA_JCS_2019:
 		return ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
 	case CRYPTO_SUITE_EDDSA_JCS_2022:
 		_, key, err := ed25519.GenerateKey(rand.Reader)
-		return key, err
+		return &key, err
 	default:
-		return nil, fmt.Errorf("unsupported cryptosuite: %s", t.cryptoSuite)
+		return nil, fmt.Errorf("unsupported cryptosuite: %s", cryptoSuite)
 	}
 }
 
@@ -740,11 +611,8 @@ func (log DIDLog) calculateVersionId(version int) (versionId, error) {
 		prevVersionId = log[version-1].VersionId
 	}
 
-	entryWithoutProof := entry
-	entryWithoutProof.Proof = nil
-
 	prevVersionId.Version = 0
-	calculatedVersionHash, err := calculateEntryHash(entryWithoutProof, prevVersionId)
+	calculatedVersionHash, err := entry.calculateEntryHash(prevVersionId)
 	if err != nil {
 		return versionId{}, fmt.Errorf("failed to calculate entry hash: %w", err)
 	}
@@ -767,16 +635,13 @@ func (log DIDLog) Verify() error {
 			prevEntry = entry
 		}
 
-		entryWithoutProof := entry
-		entryWithoutProof.Proof = nil
-
 		var versionHash EntryHash
 		// first entry uses the scid instead of the previous version hash
 		if i == 0 {
 			versionHash = EntryHash(prevEntry.Params.Scid)
 		}
 
-		calculatedVersionHash, err := calculateEntryHash(entryWithoutProof, versionId{Hash: versionHash})
+		calculatedVersionHash, err := entry.calculateEntryHash(versionId{Hash: versionHash})
 		if err != nil {
 			return fmt.Errorf("failed to calculate entry hash: %w", err)
 		}
@@ -906,29 +771,9 @@ func (log DIDLog) Verify() error {
 // 	return r, s, nil
 // }
 
-func (t *TrustDIDWeb) calculateSCID(firstLogEntry LogEntry) (string, error) {
-	return calculateEntryHash(firstLogEntry, versionId{Hash: "{SCID}"})
-}
-
-func calculateEntryHash(entry LogEntry, prevVersionId versionId) (string, error) {
-	fmt.Print("\n\ncalculateEntryHash:\n\n")
-	fmt.Printf("entry: %v\n", entry)
-	// Canonicalized version of the first log entry
-	entry.VersionId = prevVersionId
-	b, err := entry.MarshalJSONL()
-	if err != nil {
-		return "", err
-	}
-
-	fmt.Printf("b: %s\n", b)
-
-	entryHash := NewEntryHash(b, uint64(multicodec.Sha2_256))
-	if entryHash == "" {
-		return "", fmt.Errorf("failed to calculate entry hash")
-	}
-
-	return string(entryHash), nil
-}
+// func (t *TrustDIDWeb) calculateSCID(firstLogEntry LogEntry) (string, error) {
+// 	return firstLogEntry.calculateEntryHash(versionId{Hash: "{SCID}"})
+// }
 
 // The code below is code taken from the go codebase to parse an ASN.1 encoded ecdsa signature. It give more debug information than the standard ecdsa.Verify function and helps with debugging the signature verification
 

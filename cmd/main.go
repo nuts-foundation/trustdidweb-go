@@ -8,7 +8,7 @@ import (
 	"reflect"
 
 	"github.com/go-json-experiment/json/jsontext"
-	"github.com/nuts-foundation/trustdidweb-go"
+	tdw "github.com/nuts-foundation/trustdidweb-go"
 )
 
 func main() {
@@ -16,23 +16,14 @@ func main() {
 	logHandler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})
 	slog.SetDefault(slog.New(logHandler))
 
-	// Create a new TrustDIDWeb instance with a template and a crypto suite
-	tdw := trustdidweb.NewTrustDIDWeb("did:tdw:{SCID}:example.com:dids:{SCID}", "ecdsa-jcs-2019")
-
 	// Create a new signer
-	signer, err := tdw.NewSigner()
+	signer, err := tdw.NewSigner(tdw.CRYPTO_SUITE_EDDSA_JCS_2022)
 	if err != nil {
 		panic(err)
 	}
 
-	// Configure the Parameters
-	// https://bcgov.github.io/trustdidweb/#didtdw-did-method-parameters
-	params, err := tdw.NewParams(signer.Public())
-	if err != nil {
-		panic(err)
-	}
 	// Create a new DIDLog
-	log, err := tdw.Create(*params, signer)
+	log, err := tdw.Create("did:tdw:{SCID}:example.com", signer, nil)
 	if err != nil {
 		panic(err)
 	}
@@ -77,7 +68,7 @@ func main() {
 	}
 
 	// Update the log
-	log, err = tdw.Update(log, *params, newDoc, signer)
+	log, err = tdw.Update(log, tdw.LogParams{}, newDoc, signer)
 	if err != nil {
 		panic(err)
 	}
@@ -118,7 +109,7 @@ func main() {
 	fmt.Println(string(logfile))
 
 	// try to parse the log
-	parsedLog, err := trustdidweb.ParseLog(logfile)
+	parsedLog, err := tdw.ParseLog(logfile)
 	if err != nil {
 		panic(err)
 	}
@@ -159,7 +150,7 @@ func main() {
 		})
 
 	// Update the log
-	log, err = tdw.Update(log, *params, doc2, signer)
+	log, err = tdw.Update(log, tdw.LogParams{}, doc2, signer)
 	if err != nil {
 		panic(err)
 	}
