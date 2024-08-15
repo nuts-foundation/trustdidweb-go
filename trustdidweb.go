@@ -32,6 +32,9 @@ import (
 const TDWMethodv1 = "did:tdw:1"
 const TDWMethodv03 = "did:tdw:0.3"
 
+const CRYPTO_SUITE_ECDSA_JCS_2019 = "ecdsa-jcs-2019"
+const CRYPTO_SUITE_EDDSA_JCS_2022 = "eddsa-jcs-2022"
+
 type LogEntry struct {
 	VersionId   versionId `json:"versionId"`
 	VersionTime time.Time `json:"versionTime"`
@@ -372,15 +375,27 @@ var timeFunc = time.Now
 func (t *TrustDIDWeb) NewParams(pubkey crypto.PublicKey) (*LogParams, error) {
 
 	var pubkeyBytes []byte
-	if t.cryptoSuite == "ecdsa-jcs-2019" {
-		key := pubkey.(*ecdsa.PublicKey)
-		pubkeyBytes = elliptic.MarshalCompressed(key.Curve, key.X, key.Y)
-	} else {
-		return nil, fmt.Errorf("unsupported cryptosuite: %s", t.cryptoSuite)
+	var keyCodec multicodec.Code
+	switch pubKey := pubkey.(type) {
+	case *ecdsa.PublicKey:
+		pubkeyBytes = elliptic.MarshalCompressed(pubKey.Curve, pubKey.X, pubKey.Y)
+		switch pubKey.Curve {
+		case elliptic.P256():
+			keyCodec = multicodec.P256Pub
+		case elliptic.P384():
+			keyCodec = multicodec.P384Pub
+		default:
+			return nil, fmt.Errorf("unsupported curve: %s", pubKey.Curve.Params().Name)
+		}
+	case ed25519.PublicKey:
+		pubkeyBytes = pubKey
+		keyCodec = multicodec.Ed25519Pub
+	default:
+		return nil, fmt.Errorf("unsupported public key type: %T", pubkey)
 	}
 
 	buf := make([]byte, binary.MaxVarintLen64)
-	n := binary.PutUvarint(buf, uint64(multicodec.P384Pub))
+	n := binary.PutUvarint(buf, uint64(keyCodec))
 	b := buf[:n]
 
 	multiCodecKey := append(b, pubkeyBytes...)
@@ -517,29 +532,50 @@ func (t *TrustDIDWeb) Update(log DIDLog, params LogParams, modifiedDoc map[strin
 
 // NewSigner returns the signer of the configured crypto suite
 func (t *TrustDIDWeb) NewSigner() (crypto.Signer, error) {
-	if t.cryptoSuite == "ecdsa-jcs-2019" {
+	switch t.cryptoSuite {
+	case CRYPTO_SUITE_ECDSA_JCS_2019:
 		return ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	case CRYPTO_SUITE_EDDSA_JCS_2022:
+		_, key, err := ed25519.GenerateKey(rand.Reader)
+		return key, err
+	default:
+		return nil, fmt.Errorf("unsupported cryptosuite: %s", t.cryptoSuite)
 	}
-	return nil, fmt.Errorf("unsupported cryptosuite: %s", t.cryptoSuite)
 }
 
 func verificationMethodFromSigner(signer crypto.Signer) (string, error) {
 	pubKey := signer.Public()
+	var codec multicodec.Code
+	var keyBytes []byte
 
 	switch pubKey := pubKey.(type) {
 	case *ecdsa.PublicKey:
-		buf := make([]byte, binary.MaxVarintLen64)
-		n := binary.PutUvarint(buf, uint64(multicodec.P384Pub))
-		buf = buf[:n]
-		compressedKey := elliptic.MarshalCompressed(pubKey.Curve, pubKey.X, pubKey.Y)
-		encodedKey, err := multibase.Encode(multibase.Base58BTC, append(buf, compressedKey...))
-		if err != nil {
-			return "", fmt.Errorf("failed to encode public key: %w", err)
+		switch pubKey.Curve {
+		case elliptic.P256():
+			codec = multicodec.P256Pub
+		case elliptic.P384():
+			codec = multicodec.P384Pub
+		default:
+			return "", fmt.Errorf("unsupported curve: %s", pubKey.Curve.Params().Name)
 		}
-		return fmt.Sprintf("did:key:%s#%s", encodedKey, encodedKey), nil
+
+		keyBytes = elliptic.MarshalCompressed(pubKey.Curve, pubKey.X, pubKey.Y)
+	case ed25519.PublicKey:
+		codec = multicodec.Ed25519Pub
+		keyBytes = pubKey
 	default:
-		return "", fmt.Errorf("unsupported public key type")
+		return "", fmt.Errorf("unsupported public key type: %T", pubKey)
 	}
+
+	buf := make([]byte, binary.MaxVarintLen64)
+	n := binary.PutUvarint(buf, uint64(codec))
+	buf = buf[:n]
+
+	encodedKey, err := multibase.Encode(multibase.Base58BTC, append(buf, keyBytes...))
+	if err != nil {
+		return "", fmt.Errorf("failed to encode public key: %w", err)
+	}
+	return fmt.Sprintf("did:key:%s#%s", encodedKey, encodedKey), nil
 }
 
 func (log DIDLog) buildProof(version int, signer crypto.Signer) (Proof, error) {
@@ -552,19 +588,43 @@ func (log DIDLog) buildProof(version int, signer crypto.Signer) (Proof, error) {
 		return Proof{}, fmt.Errorf("failed to get verification method: %w", err)
 	}
 
+	var suite string
+	var hashfn hash.Hash
+	var signerOpts crypto.SignerOpts
+
+	switch key := signer.Public().(type) {
+	case *ecdsa.PublicKey:
+		suite = CRYPTO_SUITE_ECDSA_JCS_2019
+		signerOpts = nil
+		switch key.Curve {
+		case elliptic.P256():
+			hashfn = sha256.New()
+		case elliptic.P384():
+			hashfn = sha512.New384()
+		default:
+			return Proof{}, fmt.Errorf("unsupported curve: %s", key.Curve.Params().Name)
+		}
+	case ed25519.PublicKey:
+		suite = CRYPTO_SUITE_EDDSA_JCS_2022
+		hashfn = sha256.New()
+		signerOpts = &ed25519.Options{}
+	default:
+		return Proof{}, fmt.Errorf("unsupported public key type: %T", signer.Public())
+	}
+
 	proof := Proof{
 		Type:               "DataIntegrityProof",
-		Cryptosuite:        "ecdsa-jcs-2019",
+		Cryptosuite:        suite,
 		VerificationMethod: verificationMethod,
 		Created:            timeFunc().Format(time.RFC3339),
 		ProofPurpose:       "authentication",
 		Challenge:          entry.VersionId.String(),
 	}
 
-	pubKey := signer.Public().(*ecdsa.PublicKey)
-	fmt.Printf("pubKey: X: %s, Y: %s\n", base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(pubKey.X.Bytes()), base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(pubKey.Y.Bytes()))
+	// pubKey := signer.Public()
+	// fmt.Printf("pubKey: X: %s, Y: %s\n", base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(pubKey.X.Bytes()), base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(pubKey.Y.Bytes()))
 
-	var hashfn = sha512.New384()
+	// var hashfn = sha512.New384()
 	input, err := log.hashLogVersion(version, proof, hashfn)
 	if err != nil {
 		return Proof{}, fmt.Errorf("failed to hash entry: %w", err)
@@ -575,7 +635,7 @@ func (log DIDLog) buildProof(version int, signer crypto.Signer) (Proof, error) {
 	fmt.Printf("input: %s\n", base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(input))
 
 	// sign the entry
-	signature, err := signer.Sign(rand.Reader, input, nil)
+	signature, err := signer.Sign(rand.Reader, input, signerOpts)
 	if err != nil {
 		return Proof{}, fmt.Errorf("failed to sign entry: %w", err)
 	}
@@ -764,7 +824,7 @@ func (log DIDLog) Verify() error {
 
 			// set hash function based on cryptosuite and key type
 			switch proof.Cryptosuite {
-			case "ecdsa-jcs-2019":
+			case CRYPTO_SUITE_ECDSA_JCS_2019:
 				switch multicodec.Code(keyType) {
 				case multicodec.P256Pub:
 					hashfn = sha256.New()
@@ -773,7 +833,10 @@ func (log DIDLog) Verify() error {
 				default:
 					return fmt.Errorf("incompatible key type '%s' for cryptosuite '%s'", multicodec.Code(keyType), proof.Cryptosuite)
 				}
-			case "eddsa-jcs-2022":
+			case CRYPTO_SUITE_EDDSA_JCS_2022:
+				if multicodec.Code(keyType) != multicodec.Ed25519Pub {
+					return fmt.Errorf("incompatible key type '%s' for cryptosuite '%s'", multicodec.Code(keyType), proof.Cryptosuite)
+				}
 				hashfn = sha256.New()
 			default:
 				return fmt.Errorf("unsupported cryptosuite: %s", proof.Cryptosuite)

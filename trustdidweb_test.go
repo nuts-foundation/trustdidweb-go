@@ -221,12 +221,12 @@ func TestCreate(t *testing.T) {
 		// assert.True(t, false)
 	})
 
-	t.Run("ok", func(t *testing.T) {
-		tdw := NewTrustDIDWeb("did:example.com:did:{SCID}", "ecdsa-jcs-2019")
+	t.Run("ok - ecdsa-jcs-2019", func(t *testing.T) {
+		tdw := NewTrustDIDWeb("did:example.com:did:{SCID}", CRYPTO_SUITE_ECDSA_JCS_2019)
 		signer, err := tdw.NewSigner()
 		require.NoError(t, err)
 		pubKey := signer.Public()
-		params, err := tdw.NewParams(pubKey.(*ecdsa.PublicKey))
+		params, err := tdw.NewParams(pubKey)
 		require.NoError(t, err)
 		log, err := tdw.Create(*params, signer)
 		t.Logf("entries: %+v", log)
@@ -235,6 +235,22 @@ func TestCreate(t *testing.T) {
 		err = log.Verify()
 		require.NoError(t, err)
 	})
+
+	t.Run("ok - eddsa-jcs-2022", func(t *testing.T) {
+		tdw := NewTrustDIDWeb("did:example.com:did:{SCID}", CRYPTO_SUITE_EDDSA_JCS_2022)
+		signer, err := tdw.NewSigner()
+		require.NoError(t, err)
+		pubKey := signer.Public()
+		params, err := tdw.NewParams(pubKey)
+		require.NoError(t, err)
+		log, err := tdw.Create(*params, signer)
+		t.Logf("entries: %+v", log)
+		require.NoError(t, err)
+		require.Len(t, log, 1)
+		err = log.Verify()
+		require.NoError(t, err)
+	})
+
 }
 
 const testVector1 = `[
