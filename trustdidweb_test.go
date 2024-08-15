@@ -315,6 +315,14 @@ func TestVerifyProof(t *testing.T) {
 		err = DIDLog{entry}.Verify()
 		assert.NoError(t, err)
 	})
+
+	t.Run("test vector 3", func(t *testing.T) {
+		entry := LogEntry{}
+		err := entry.UnmarshalJSONL([]byte(LogLineTestVector3))
+		require.NoError(t, err)
+		err = DIDLog{entry}.Verify()
+		assert.NoError(t, err)
+	})
 }
 
 func TestUpdate(t *testing.T) {
@@ -380,6 +388,9 @@ func testLogEntry1(t *testing.T) LogEntry {
 const LogLineTestVector1 = `["1-QmdwvukAYUU6VYwqM4jQbSiKk1ctg12j5hMTY6EfbbkyEJ", "2024-07-29T17:00:27Z", {"prerotation": true, "updateKeys": ["z82LkvR3CBNkb9tUVps4GhGpNvEVP6vWzdwgGwQbA1iYoZwd7m1F1hSvkJFSe6sWci7JiXc"], "nextKeyHashes": ["QmcbM5bppyT4yyaL35TQQJ2XdSrSNAhH5t6f4ZcuyR4VSv"], "method": "did:tdw:0.3", "scid": "Qma6mc1qZw3NqxwX6SB5GPQYzP4pGN2nXD15Jwi4bcDBKu"}, {"value": {"@context": ["https://www.w3.org/ns/did/v1", "https://w3id.org/security/multikey/v1"], "id": "did:tdw:Qma6mc1qZw3NqxwX6SB5GPQYzP4pGN2nXD15Jwi4bcDBKu:domain.example"}}, [{"type": "DataIntegrityProof", "cryptosuite": "ecdsa-jcs-2019", "verificationMethod": "did:key:z82LkvR3CBNkb9tUVps4GhGpNvEVP6vWzdwgGwQbA1iYoZwd7m1F1hSvkJFSe6sWci7JiXc#z82LkvR3CBNkb9tUVps4GhGpNvEVP6vWzdwgGwQbA1iYoZwd7m1F1hSvkJFSe6sWci7JiXc", "created": "2024-07-29T17:00:27Z", "proofPurpose": "authentication", "challenge": "1-QmdwvukAYUU6VYwqM4jQbSiKk1ctg12j5hMTY6EfbbkyEJ", "proofValue": "zDk24L4vbVrFm5CPQjRD9KoGFNcV6C3ub1ducPQEvDQ39U68GiofAndGbdG9azV6r78gHr1wKnKNPbMz87xtjZtcq9iwN5hjLptM9Lax4UeMWm9Xz7PP4crToj7sZnvyb3x4"}]]`
 
 const LogLineTestVector2 = `["1-QmXWp3RxVCbCVK749eDEGMcuSpHpt23VyKav6TJxgQncCN", "2024-08-15T08:45:54Z", {"prerotation": true, "updateKeys": ["z82Lm4hFND9akT8nJu8WqjQS9t3mLcKLWFu1PaynM6J5KPyHJV4LxMkds6qfiyM7hrUq6vX"], "nextKeyHashes": ["QmedThpP8wtf8f79wRUpdjsTRJN582eVqQ4rQwWaForXux"], "method": "did:tdw:0.3", "scid": "QmbqTjJBnx2MGDcba2ZSzgkRJsCRDXKxeTUctkaUNo2wCW"}, {"value": {"@context": ["https://www.w3.org/ns/did/v1", "https://w3id.org/security/multikey/v1"], "id": "did:tdw:QmbqTjJBnx2MGDcba2ZSzgkRJsCRDXKxeTUctkaUNo2wCW:domain.example"}}, [{"type": "DataIntegrityProof", "cryptosuite": "ecdsa-jcs-2019", "verificationMethod": "did:key:z82Lm4hFND9akT8nJu8WqjQS9t3mLcKLWFu1PaynM6J5KPyHJV4LxMkds6qfiyM7hrUq6vX#z82Lm4hFND9akT8nJu8WqjQS9t3mLcKLWFu1PaynM6J5KPyHJV4LxMkds6qfiyM7hrUq6vX", "created": "2024-08-15T08:45:54Z", "proofPurpose": "authentication", "challenge": "1-QmXWp3RxVCbCVK749eDEGMcuSpHpt23VyKav6TJxgQncCN", "proofValue": "z2Tra2ZbYzcmN3Wvjyqr5Z2AvJ83q3AazM2VkfBE8WsJJ4CD6YFhJuMUc2atAcDDUwdgJsoHJ7aiJGmEhLTkooSdJ2PQvuWBPQ7zdRmZ7wfL5TZ6My2d6YtJCPMDoNQK6NQMr"}]]`
+
+// consists of a ed25519 signature
+const LogLineTestVector3 = `["1-QmZWJ1h4cnzsUVYXrzPvcDD5tneo4w5g1jaLCJbiX5BAvx", "2024-08-15T09:03:55Z", {"prerotation": true, "updateKeys": ["z6MkpgcFTDewdbqkLyP1bD9gj1NRNQUPhSHeQ5h3eVhJrSHa"], "nextKeyHashes": ["QmX4XAi5QzFAZganGNSdcv7VkjusoAzHhwgbco9o6d4s1n"], "method": "did:tdw:0.3", "scid": "QmWp26RwppBQxA6VUZGeQTG5Xbt9hZxNyTJDsW2C27s5E8"}, {"value": {"@context": ["https://www.w3.org/ns/did/v1", "https://w3id.org/security/multikey/v1"], "id": "did:tdw:QmWp26RwppBQxA6VUZGeQTG5Xbt9hZxNyTJDsW2C27s5E8:domain.example"}}, [{"type": "DataIntegrityProof", "cryptosuite": "eddsa-jcs-2022", "verificationMethod": "did:key:z6MkpgcFTDewdbqkLyP1bD9gj1NRNQUPhSHeQ5h3eVhJrSHa#z6MkpgcFTDewdbqkLyP1bD9gj1NRNQUPhSHeQ5h3eVhJrSHa", "created": "2024-08-15T09:03:55Z", "proofPurpose": "authentication", "challenge": "1-QmZWJ1h4cnzsUVYXrzPvcDD5tneo4w5g1jaLCJbiX5BAvx", "proofValue": "z5phrZZ1zZqgV1ESRntr7sdcH99tSEeihNrhViPwGqvxQrJVmFCQqQHNKdjniBvK1ux6wLcCm9C4o9mRzVqL8LJFh"}]]`
 
 func logEntryTestVector1(t *testing.T) LogEntry {
 	t.Helper()

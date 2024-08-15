@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
@@ -635,6 +636,18 @@ func (log DIDLog) hashLogVersion(version int, proof Proof, hashfn hash.Hash) ([]
 	return input, nil
 }
 
+func extractEcdsaPubKey(key []byte, curve elliptic.Curve) (crypto.PublicKey, error) {
+	x, y := elliptic.UnmarshalCompressed(curve, key)
+	if x == nil {
+		return nil, fmt.Errorf("failed to unmarshal compressed public key")
+	}
+	return &ecdsa.PublicKey{
+		Curve: curve,
+		X:     x,
+		Y:     y,
+	}, nil
+}
+
 func extractPubKey(verificationMethod string) (uint64, crypto.PublicKey, error) {
 	encodedPubKey := strings.Split(verificationMethod, "#")[1]
 	_, multibaseKey, err := multibase.Decode(encodedPubKey)
@@ -646,38 +659,25 @@ func extractPubKey(verificationMethod string) (uint64, crypto.PublicKey, error) 
 	if n <= 0 {
 		return 0, nil, fmt.Errorf("invalid multibase key type header")
 	}
+	keyBytes := multibaseKey[n:]
 
-	var curve elliptic.Curve
+	var pubKey crypto.PublicKey
+
 	switch multicodec.Code(keyType) {
 	case multicodec.P256Pub:
-		curve = elliptic.P256()
+		pubKey, err = extractEcdsaPubKey(keyBytes, elliptic.P256())
 	case multicodec.P384Pub:
-		curve = elliptic.P384()
+		pubKey, err = extractEcdsaPubKey(keyBytes, elliptic.P384())
+	case multicodec.Ed25519Pub:
+		pubKey = ed25519.PublicKey(keyBytes)
 	default:
 		return 0, nil, fmt.Errorf("unsupported key type: %x", keyType)
 	}
 
-	compressedPubkey := multibaseKey[n:]
-	// fmt.Printf("compressedPubkey: %x\n", compressedPubkey)
-	x, y := elliptic.UnmarshalCompressed(curve, compressedPubkey)
-	if x == nil {
-		return 0, nil, fmt.Errorf("failed to unmarshal compressed public key")
+	if err != nil {
+		return 0, nil, fmt.Errorf("failed to extract public key: %w", err)
 	}
 
-	xStr := base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(x.Bytes())
-	yStr := base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(y.Bytes())
-
-	logger().Debug("verifyProof", "x", xStr)
-	logger().Debug("verifyProof", "y", yStr)
-
-	fmt.Printf("x: %s\n", xStr)
-	fmt.Printf("y: %s\n", yStr)
-
-	pubKey := &ecdsa.PublicKey{
-		Curve: curve,
-		X:     x,
-		Y:     y,
-	}
 	return keyType, pubKey, nil
 
 }
@@ -773,6 +773,8 @@ func (log DIDLog) Verify() error {
 				default:
 					return fmt.Errorf("incompatible key type '%s' for cryptosuite '%s'", multicodec.Code(keyType), proof.Cryptosuite)
 				}
+			case "eddsa-jcs-2022":
+				hashfn = sha256.New()
 			default:
 				return fmt.Errorf("unsupported cryptosuite: %s", proof.Cryptosuite)
 			}
@@ -783,40 +785,41 @@ func (log DIDLog) Verify() error {
 			}
 
 			proofValue := proof.ProofValue
-
-			// fmt.Printf("input: %s\n", base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(input))
-
 			_, signature, err := multibase.Decode(proofValue)
 			if err != nil {
 				return fmt.Errorf("failed to decode proof value: %w", err)
 			}
-
-			// fmt.Printf("pubKey: X: %s, Y: %s\n", base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(pubKey.X.Bytes()), base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(pubKey.Y.Bytes()))
-			// fmt.Printf("input: %s\n", base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(input))
 			fmt.Printf("signature: %x\n", signature)
-
 			fmt.Printf("signature length: %d\n", len(signature))
 
-			// a acdsa signature can be either 2 concatenated integers or asn1 encoded
-			// This code checks if the signature valid asn1 encoded:
-			// _, err = parseSig(signature, false)
-			// if err != nil {
-			// 	return fmt.Errorf("failed to parse signature: %w", err)
-			// }
+			switch pubKey := pubKey.(type) {
+			case *ecdsa.PublicKey:
+				// a acdsa signature can be either 2 concatenated integers or asn1 encoded
+				// This code checks if the signature valid asn1 encoded:
+				// _, err = parseSig(signature, false)
+				// if err != nil {
+				// 	return fmt.Errorf("failed to parse signature: %w", err)
+				// }
+				// split the signature in half to get the r and s values
+				r := big.NewInt(0).SetBytes(signature[:len(signature)/2])
+				s := big.NewInt(0).SetBytes(signature[len(signature)/2:])
 
-			// split the signature in half to get the r and s values
-			r := big.NewInt(0).SetBytes(signature[:len(signature)/2])
-			s := big.NewInt(0).SetBytes(signature[len(signature)/2:])
-
-			// try both type of signature encoding
-			if !ecdsa.Verify(pubKey.(*ecdsa.PublicKey), input, r, s) {
-				// try the other way around:
-				r = big.NewInt(0).SetBytes(signature[len(signature)/2:])
-				s = big.NewInt(0).SetBytes(signature[:len(signature)/2])
-				if !ecdsa.Verify(pubKey.(*ecdsa.PublicKey), input, r, s) &&
-					!ecdsa.VerifyASN1(pubKey.(*ecdsa.PublicKey), input, signature) {
+				// try both type of signature encoding
+				if !ecdsa.Verify(pubKey, input, r, s) {
+					// try the other way around:
+					r = big.NewInt(0).SetBytes(signature[len(signature)/2:])
+					s = big.NewInt(0).SetBytes(signature[:len(signature)/2])
+					if !ecdsa.Verify(pubKey, input, r, s) &&
+						!ecdsa.VerifyASN1(pubKey, input, signature) {
+						return fmt.Errorf("failed to verify proof")
+					}
+				}
+			case ed25519.PublicKey:
+				if !ed25519.Verify(pubKey, input, signature) {
 					return fmt.Errorf("failed to verify proof")
 				}
+			default:
+				return fmt.Errorf("unsupported public key type: %T", pubKey)
 			}
 		}
 	}
