@@ -370,13 +370,11 @@ func (t *TrustDIDWeb) renderPathTemplate(scid string) string {
 // for testing purposes
 var timeFunc = time.Now
 
-// NewParams returns the parameters for the first log entry
-// https://bcgov.github.io/trustdidweb/#didtdw-did-method-parameters
-func (t *TrustDIDWeb) NewParams(pubkey crypto.PublicKey) (*LogParams, error) {
-
+// encodePubKey encodes a public key to a multicodec format
+func encodePubKey(pubKey crypto.PublicKey) (string, error) {
 	var pubkeyBytes []byte
 	var keyCodec multicodec.Code
-	switch pubKey := pubkey.(type) {
+	switch pubKey := pubKey.(type) {
 	case *ecdsa.PublicKey:
 		pubkeyBytes = elliptic.MarshalCompressed(pubKey.Curve, pubKey.X, pubKey.Y)
 		switch pubKey.Curve {
@@ -385,13 +383,13 @@ func (t *TrustDIDWeb) NewParams(pubkey crypto.PublicKey) (*LogParams, error) {
 		case elliptic.P384():
 			keyCodec = multicodec.P384Pub
 		default:
-			return nil, fmt.Errorf("unsupported curve: %s", pubKey.Curve.Params().Name)
+			return "", fmt.Errorf("unsupported curve: %s", pubKey.Curve.Params().Name)
 		}
 	case ed25519.PublicKey:
 		pubkeyBytes = pubKey
 		keyCodec = multicodec.Ed25519Pub
 	default:
-		return nil, fmt.Errorf("unsupported public key type: %T", pubkey)
+		return "", fmt.Errorf("unsupported public key type: %T", pubKey)
 	}
 
 	buf := make([]byte, binary.MaxVarintLen64)
@@ -400,19 +398,30 @@ func (t *TrustDIDWeb) NewParams(pubkey crypto.PublicKey) (*LogParams, error) {
 
 	multiCodecKey := append(b, pubkeyBytes...)
 
-	updateKey, err := multibase.Encode(multibase.Base58BTC, multiCodecKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to encode public key: %w", err)
+	return multibase.Encode(multibase.Base58BTC, multiCodecKey)
+}
+
+// NewParams returns the parameters for the first log entry
+// https://bcgov.github.io/trustdidweb/#didtdw-did-method-parameters
+func (t *TrustDIDWeb) NewParams(pubKeys []crypto.PublicKey, nextKeyHashes []string) (*LogParams, error) {
+	updateKeys := make([]string, len(pubKeys))
+	var err error
+	for i, pubKey := range pubKeys {
+		if updateKeys[i], err = encodePubKey(pubKey); err != nil {
+			return nil, fmt.Errorf("failed to encode public key: %w", err)
+		}
+	}
+	var prerotation bool
+	if len(nextKeyHashes) > 0 {
+		prerotation = true
 	}
 
 	return &LogParams{
-		Method:      "did:tdw:0.3",
-		Scid:        "{SCID}",
-		Hash:        "sha3-256",
-		Prerotation: true,
-		UpdateKeys:  []string{updateKey},
-		// TODO: generate the next key hash based on a the next update key
-		NextKeyHashes: []string{"enkkrohe5ccxyc7zghic6qux5inyzthg2tqka4b57kvtorysc3aa"},
+		Method:        TDWMethodv03,
+		Scid:          "{SCID}",
+		Prerotation:   prerotation,
+		UpdateKeys:    updateKeys,
+		NextKeyHashes: nextKeyHashes,
 	}, nil
 }
 
@@ -545,33 +554,7 @@ func (t *TrustDIDWeb) NewSigner() (crypto.Signer, error) {
 
 func verificationMethodFromSigner(signer crypto.Signer) (string, error) {
 	pubKey := signer.Public()
-	var codec multicodec.Code
-	var keyBytes []byte
-
-	switch pubKey := pubKey.(type) {
-	case *ecdsa.PublicKey:
-		switch pubKey.Curve {
-		case elliptic.P256():
-			codec = multicodec.P256Pub
-		case elliptic.P384():
-			codec = multicodec.P384Pub
-		default:
-			return "", fmt.Errorf("unsupported curve: %s", pubKey.Curve.Params().Name)
-		}
-
-		keyBytes = elliptic.MarshalCompressed(pubKey.Curve, pubKey.X, pubKey.Y)
-	case ed25519.PublicKey:
-		codec = multicodec.Ed25519Pub
-		keyBytes = pubKey
-	default:
-		return "", fmt.Errorf("unsupported public key type: %T", pubKey)
-	}
-
-	buf := make([]byte, binary.MaxVarintLen64)
-	n := binary.PutUvarint(buf, uint64(codec))
-	buf = buf[:n]
-
-	encodedKey, err := multibase.Encode(multibase.Base58BTC, append(buf, keyBytes...))
+	encodedKey, err := encodePubKey(pubKey)
 	if err != nil {
 		return "", fmt.Errorf("failed to encode public key: %w", err)
 	}
@@ -745,13 +728,14 @@ func extractPubKey(verificationMethod string) (uint64, crypto.PublicKey, error) 
 func (log DIDLog) calculateVersionId(version int) (versionId, error) {
 	var entry LogEntry
 	var prevVersionId versionId
-	if version == 0 {
+	switch version {
+	case 0:
 		entry = log[0]
 		prevVersionId = versionId{Version: 0, Hash: EntryHash("{SCID}")}
-	} else if version == 1 {
+	case 1:
 		entry = log[0]
 		prevVersionId = versionId{Version: 0, Hash: EntryHash(entry.Params.Scid)}
-	} else {
+	default:
 		entry = log[version-1]
 		prevVersionId = log[version-1].VersionId
 	}

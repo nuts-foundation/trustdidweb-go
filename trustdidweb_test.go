@@ -1,6 +1,7 @@
 package trustdidweb
 
 import (
+	"crypto"
 	"crypto/ecdh"
 	"crypto/ecdsa"
 	"encoding/base64"
@@ -226,7 +227,7 @@ func TestCreate(t *testing.T) {
 		signer, err := tdw.NewSigner()
 		require.NoError(t, err)
 		pubKey := signer.Public()
-		params, err := tdw.NewParams(pubKey)
+		params, err := tdw.NewParams([]crypto.PublicKey{pubKey}, nil)
 		require.NoError(t, err)
 		log, err := tdw.Create(*params, signer)
 		t.Logf("entries: %+v", log)
@@ -241,7 +242,7 @@ func TestCreate(t *testing.T) {
 		signer, err := tdw.NewSigner()
 		require.NoError(t, err)
 		pubKey := signer.Public()
-		params, err := tdw.NewParams(pubKey)
+		params, err := tdw.NewParams([]crypto.PublicKey{pubKey}, nil)
 		require.NoError(t, err)
 		log, err := tdw.Create(*params, signer)
 		t.Logf("entries: %+v", log)
@@ -346,7 +347,7 @@ func TestUpdate(t *testing.T) {
 		tdw := NewTrustDIDWeb("did:example.com:did:{SCID}", "ecdsa-jcs-2019")
 		signer, err := tdw.NewSigner()
 		require.NoError(t, err)
-		params, err := tdw.NewParams(signer.Public().(*ecdsa.PublicKey))
+		params, err := tdw.NewParams([]crypto.PublicKey{signer.Public()}, nil)
 		require.NoError(t, err)
 
 		log, err := tdw.Create(*params, signer)
