@@ -89,6 +89,9 @@ func (l LogEntry) MarshalJSONL() ([]byte, error) {
 }
 
 func (entry LogEntry) calculateEntryHash(prevVersionId versionId) (string, error) {
+	fmt.Print("\ncalculateEntryHash:\n")
+
+	fmt.Printf("previous version id: %s\n", prevVersionId.String())
 	// a hash is calulated over the entry without proof
 	entry.Proof = nil
 	// fmt.Print("\n\ncalculateEntryHash:\n\n")
@@ -101,12 +104,14 @@ func (entry LogEntry) calculateEntryHash(prevVersionId versionId) (string, error
 		return "", err
 	}
 
-	fmt.Printf("b: %s\n", b)
+	fmt.Printf("logentry: %s\n", b)
 
 	entryHash := NewEntryHash(b, uint64(multicodec.Sha2_256))
 	if entryHash == "" {
 		return "", fmt.Errorf("failed to calculate entry hash")
 	}
+
+	fmt.Printf("calculated hash: %s\n", entryHash)
 
 	return string(entryHash), nil
 }

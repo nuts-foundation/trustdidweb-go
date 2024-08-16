@@ -207,7 +207,7 @@ func (log DIDLog) Document() (map[string]interface{}, error) {
 		// first entry contains a value
 		if i == 0 {
 			if entry.DocState.Value == nil {
-				return nil, fmt.Errorf("missing value in first log entry")
+				return nil, fmt.Errorf("missing docstate value in first log entry")
 			}
 			docBytes, err = json.Marshal(entry.DocState.Value)
 			if err != nil {
@@ -360,6 +360,7 @@ func Create(didTemplate string, signer crypto.Signer, nextKeyhashes []string) (D
 }
 
 func Update(log DIDLog, params LogParams, modifiedDoc map[string]interface{}, signer crypto.Signer) (DIDLog, error) {
+	fmt.Print("\n\nUpdate:\n\n")
 
 	currentDoc, err := log.Document()
 	if err != nil {
@@ -394,7 +395,8 @@ func Update(log DIDLog, params LogParams, modifiedDoc map[string]interface{}, si
 		DocState:    docState{Patch: patch},
 	}
 
-	versionId, err := append(log, entry).calculateVersionId(2)
+	nextVersion := len(log) + 1
+	versionId, err := append(log, entry).calculateVersionId(nextVersion)
 	if err != nil {
 		return nil, fmt.Errorf("failed to hash entry: %w", err)
 	}
@@ -514,7 +516,11 @@ func extractEcdsaPubKey(key []byte, curve elliptic.Curve) (crypto.PublicKey, err
 	}, nil
 }
 
+// calculateEntryHash calculates the hash of the
 func (log DIDLog) calculateVersionId(version int) (versionId, error) {
+	fmt.Print("\ncalculateVersionId:\n")
+	fmt.Printf("version: %d\n", version)
+
 	var entry LogEntry
 	var prevVersionId versionId
 	switch version {
@@ -527,10 +533,9 @@ func (log DIDLog) calculateVersionId(version int) (versionId, error) {
 		prevVersionId = versionId{Version: 0, Hash: EntryHash(entry.Params.Scid)}
 	default:
 		entry = log[version-1]
-		prevVersionId = log[version-1].VersionId
+		prevVersionId = log[version-2].VersionId
 	}
 
-	prevVersionId.Version = 0
 	calculatedVersionHash, err := entry.calculateEntryHash(prevVersionId)
 	if err != nil {
 		return versionId{}, fmt.Errorf("failed to calculate entry hash: %w", err)
@@ -539,6 +544,7 @@ func (log DIDLog) calculateVersionId(version int) (versionId, error) {
 }
 
 func (log DIDLog) Verify() error {
+	fmt.Print("\n\nVerify:\n\n")
 	// empty log should not be considered valid
 	if len(log) == 0 {
 		return fmt.Errorf("empty log")
@@ -547,20 +553,19 @@ func (log DIDLog) Verify() error {
 	var scid string
 
 	for i, entry := range log {
+		fmt.Printf("\nentry i: %d\n", i)
 
 		if i+1 != entry.VersionId.Version {
 			return fmt.Errorf("invalid log sequence number, expected: %d, got: %d", i+1, entry.VersionId.Version)
 		}
 
 		if i == 0 {
+			fmt.Printf("verify scid first entry\n")
 			if entry.Params.Scid == "" {
 				return fmt.Errorf("missing scid in the first log entry params")
 			}
 
-			if entry.DocState.Value == nil {
-				return fmt.Errorf("missing docstate value in the first log entry")
-			}
-			// check the scid
+			// set the scid
 			scid = entry.Params.Scid
 
 			// create a copy
@@ -593,6 +598,9 @@ func (log DIDLog) Verify() error {
 				return fmt.Errorf("invalid scid")
 			}
 		} else {
+			if log[:i].Deactivated() {
+				return fmt.Errorf("invalid entry after deactivation")
+			}
 			// check if the scid is the same as the first one
 			if entry.Params.Scid != "" && entry.Params.Scid != scid {
 				return fmt.Errorf("scid cannot be changed")
@@ -601,18 +609,18 @@ func (log DIDLog) Verify() error {
 
 		// previous entry needed to verify if the correct key was used
 		var prevEntry LogEntry
-		var versionHash EntryHash
+		var prevVersionID versionId
 
-		if i > 0 {
-			prevEntry = log[i-1]
-			versionHash = EntryHash(prevEntry.VersionId.Hash)
-		} else {
+		if i == 0 {
 			prevEntry = entry
 			// first entry uses the scid instead of the previous version hash
-			versionHash = EntryHash(entry.Params.Scid)
+			prevVersionID = versionId{Hash: EntryHash(entry.Params.Scid)}
+		} else {
+			prevEntry = log[i-1]
+			prevVersionID = prevEntry.VersionId
 		}
 
-		calculatedVersionHash, err := entry.calculateEntryHash(versionId{Hash: versionHash})
+		calculatedVersionHash, err := entry.calculateEntryHash(prevVersionID)
 		if err != nil {
 			return fmt.Errorf("failed to calculate entry hash: %w", err)
 		}
@@ -620,18 +628,77 @@ func (log DIDLog) Verify() error {
 			return fmt.Errorf("failed to verify entry hash")
 		}
 		challenge := entry.VersionId.String()
+		updateKeys := log[:i].UpdateKeys()
+
+		if i == 0 {
+			// first entry uses its own update keys
+			updateKeys = log[:i+1].UpdateKeys()
+		}
 
 		for _, proof := range entry.Proof {
 			doc, err := log[:i+1].Document()
 			if err != nil {
-				return fmt.Errorf("failed to get document: %w", err)
+				return err
 			}
 
-			return proof.Verify(challenge, prevEntry.Params.UpdateKeys, doc)
+			err = proof.Verify(challenge, updateKeys, doc)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
 	return nil
+}
+
+func Deactivate(log DIDLog, signer crypto.Signer) (DIDLog, error) {
+	fmt.Print("\n\nDeactivate:\n\n")
+
+	if len(log) == 0 {
+		return nil, fmt.Errorf("empty log")
+	}
+
+	// check if the log is already deactivated
+	if log.Deactivated() {
+		return nil, fmt.Errorf("log is already deactivated")
+	}
+
+	// create a new log entry
+	params := LogParams{Deactivated: true}
+
+	return Update(log, params, nil, signer)
+}
+
+func (log DIDLog) UpdateKeys() []string {
+	if len(log) == 0 {
+		return nil
+	}
+	var updateKeys []string
+
+	// exclude the last entry since this entry is not active
+	for _, entry := range log {
+		if entry.Params.Deactivated {
+			return nil
+		}
+
+		if len(entry.Params.UpdateKeys) > 0 {
+			updateKeys = entry.Params.UpdateKeys
+		}
+	}
+	return updateKeys
+}
+
+func (log DIDLog) Deactivated() bool {
+	if len(log) == 0 {
+		return false
+	}
+	// exclude the last entry since this entry is not active
+	for _, entry := range log {
+		if entry.Params.Deactivated {
+			return true
+		}
+	}
+	return false
 }
 
 // func parseSignature(sig []byte) (r, s []byte, err error) {

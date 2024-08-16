@@ -338,16 +338,140 @@ func TestDIDLogVerify(t *testing.T) {
 		assert.EqualError(t, err, "invalid scid")
 	})
 
-	t.Run("multiple entries", func(t *testing.T) {
-		t.Run("nok - a scid cannot be changed", func(t *testing.T) {
-			t.Skipf("not implemented")
-		})
-
-		t.Run("nok - an empty updateKeys array should not remove previously published keys", func(t *testing.T) {
-			t.Skipf("not implemented")
-		})
+	t.Run("nok - no docstate in first entry", func(t *testing.T) {
+		entry := LogEntry{VersionId: versionId{Version: 0}}
+		version, err := DIDLog{entry}.calculateVersionId(0)
+		require.NoError(t, err)
+		entry.VersionId = version
+		entry.Params.Scid = string(version.Hash)
+		version, err = DIDLog{entry}.calculateVersionId(1)
+		require.NoError(t, err)
+		entry.VersionId = version
+		entry.Proof = []Proof{{}}
+		err = DIDLog{entry}.Verify()
+		assert.EqualError(t, err, "missing docstate value in first log entry")
 	})
 
+	t.Run("multiple entries", func(t *testing.T) {
+		t.Run("ok", func(t *testing.T) {
+			log := DIDLog{}
+			for _, logLine := range testVector1.log {
+				entry := LogEntry{}
+				err := entry.UnmarshalJSONL([]byte(logLine))
+				require.NoError(t, err)
+				log = append(log, entry)
+			}
+
+			err := log.Verify()
+			assert.NoError(t, err)
+		})
+
+		t.Run("nok - a scid cannot be changed", func(t *testing.T) {
+			log := DIDLog{}
+			for _, logLine := range testVector1.log {
+				entry := LogEntry{}
+				err := entry.UnmarshalJSONL([]byte(logLine))
+				require.NoError(t, err)
+				log = append(log, entry)
+			}
+
+			log[1].Params.Scid = "invalid"
+			err := log.Verify()
+			assert.EqualError(t, err, "scid cannot be changed")
+		})
+
+		t.Run("ok - a entry can be signed with a previous key which is followed by an empty params.updateKey", func(t *testing.T) {
+			log := DIDLog{}
+			entry := LogEntry{}
+			err := entry.UnmarshalJSONL([]byte(testVector1.log[0]))
+			require.NoError(t, err)
+			log = append(log, entry)
+
+			doc, err := log.Document()
+			require.NoError(t, err)
+
+			signer := testVector1.signer(t)
+
+			log, err = Update(log, LogParams{}, doc, signer)
+			require.NoError(t, err)
+
+			log, err = Update(log, LogParams{}, doc, signer)
+			require.NoError(t, err)
+
+			err = log.Verify()
+			assert.NoError(t, err)
+		})
+
+		t.Run("nok - entry cannot be signed with deactivated key", func(t *testing.T) {
+			entry := LogEntry{}
+			log := DIDLog{}
+			err := entry.UnmarshalJSONL([]byte(testVector1.log[0]))
+			require.NoError(t, err)
+			log = append(log, entry)
+
+			doc, err := log.Document()
+			require.NoError(t, err)
+
+			signer := testVector1.signer(t)
+
+			log, err = Update(log, LogParams{UpdateKeys: []string{"fooKey"}}, doc, signer)
+			require.NoError(t, err)
+			err = log.Verify()
+			require.NoError(t, err)
+
+			assert.Equal(t, []string{"fooKey"}, log.UpdateKeys())
+
+			log, err = Update(log, LogParams{}, doc, signer)
+			require.NoError(t, err)
+
+			err = log.Verify()
+			assert.EqualError(t, err, "proof must be signed with an active update key")
+		})
+
+		t.Run("nok - no more new entries after a deactivation entry", func(t *testing.T) {
+			entry := LogEntry{}
+			log := DIDLog{}
+			err := entry.UnmarshalJSONL([]byte(testVector1.log[0]))
+			require.NoError(t, err)
+			log = append(log, entry)
+			err = log.Verify()
+			require.NoError(t, err)
+
+			doc, err := log.Document()
+			require.NoError(t, err)
+
+			signer := testVector1.signer(t)
+
+			log, err = Update(log, LogParams{Deactivated: true}, doc, signer)
+			require.NoError(t, err)
+			require.True(t, log.Deactivated(), "log should be deactivated")
+			err = log.Verify()
+			require.NoError(t, err)
+
+			log, err = Update(log, LogParams{Deactivated: false}, doc, signer)
+			require.NoError(t, err)
+
+			err = log.Verify()
+			assert.EqualError(t, err, "invalid entry after deactivation")
+		})
+	})
+}
+
+func TestDIDLogDeactivate(t *testing.T) {
+	t.Run("ok", func(t *testing.T) {
+		entry := LogEntry{}
+		log := DIDLog{}
+		err := entry.UnmarshalJSONL([]byte(testVector1.log[0]))
+		require.NoError(t, err)
+		log = append(log, entry)
+		err = log.Verify()
+		require.NoError(t, err)
+
+		signer := testVector1.signer(t)
+		log, err = Deactivate(log, signer)
+		assert.NoError(t, err)
+		assert.True(t, log.Deactivated())
+	})
 }
 
 func TestUpdate(t *testing.T) {
@@ -373,6 +497,9 @@ func TestUpdate(t *testing.T) {
 		log, err = Update(log, LogParams{}, doc, signer)
 		assert.NoError(t, err)
 		assert.Len(t, log, 2)
+
+		newEntry := log[len(log)-1]
+		assert.Equal(t, 2, newEntry.VersionId.Version)
 
 		updatedDoc, err := log.Document()
 		assert.NoError(t, err)
