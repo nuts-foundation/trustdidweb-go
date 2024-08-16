@@ -22,7 +22,6 @@ import (
 
 	jsonpatchApplier "github.com/evanphx/json-patch/v5"
 	"github.com/go-json-experiment/json"
-	"github.com/go-json-experiment/json/jsontext"
 	jsonpatchCreator "github.com/mattbaird/jsonpatch"
 	b58 "github.com/mr-tron/base58/base58"
 	"github.com/multiformats/go-multibase"
@@ -479,7 +478,11 @@ func (log DIDLog) buildProof(version int, signer crypto.Signer) (Proof, error) {
 	// fmt.Printf("pubKey: X: %s, Y: %s\n", base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(pubKey.X.Bytes()), base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(pubKey.Y.Bytes()))
 
 	// var hashfn = sha512.New384()
-	input, err := log.hashLogVersion(version, proof, hashfn)
+	doc, err := log.Document()
+	if err != nil {
+		return Proof{}, fmt.Errorf("failed to get document: %w", err)
+	}
+	input, err := hashLogVersion(doc, proof, hashfn)
 	if err != nil {
 		return Proof{}, fmt.Errorf("failed to hash entry: %w", err)
 	}
@@ -507,48 +510,6 @@ func (log DIDLog) buildProof(version int, signer crypto.Signer) (Proof, error) {
 
 // hashLogVersion removes the proofValue from the optionData (proof), canonicalizes both
 // the optionData and the DocState and hashes them using the provided hash algorithm
-func (log DIDLog) hashLogVersion(version int, proof Proof, hashfn hash.Hash) ([]byte, error) {
-	// Remove the proofValue from the proof
-	proof.ProofValue = ""
-
-	// Create a canonicalized version of the proof and the did document
-	optionData, err := json.Marshal(proof)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal proof: %w", err)
-	}
-	(*jsontext.Value)(&optionData).Canonicalize()
-
-	// Create a canonicalized version of the docstate up until this version
-	doc, err := log[:version].Document()
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal doc state value: %w", err)
-	}
-	docData, err := json.Marshal(doc)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal value: %w", err)
-	}
-	(*jsontext.Value)(&docData).Canonicalize()
-
-	logger().Debug("canonicalized did doc", "value", string(docData))
-	logger().Debug("canonicalized proof", "value", string(optionData))
-
-	hashfn.Reset()
-	hashfn.Write(docData)
-	dataHash := hashfn.Sum(nil)
-	hashfn.Reset()
-	hashfn.Write(optionData)
-	optionsHash := hashfn.Sum(nil)
-
-	fmt.Printf("dataHash: %x\n", dataHash)
-	fmt.Printf("optionsHash: %x\n", optionsHash)
-
-	logger().Debug("hash", "data", base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(dataHash[:]))
-	logger().Debug("hash", "options", base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(optionsHash[:]))
-
-	input := append(dataHash[:], optionsHash[:]...)
-	fmt.Printf("input: %x\n", input)
-	return input, nil
-}
 
 func extractEcdsaPubKey(key []byte, curve elliptic.Curve) (crypto.PublicKey, error) {
 	x, y := elliptic.UnmarshalCompressed(curve, key)
@@ -651,88 +612,12 @@ func (log DIDLog) Verify() error {
 		challenge := entry.VersionId.String()
 
 		for _, proof := range entry.Proof {
-			if proof.Type != "DataIntegrityProof" {
-				return fmt.Errorf("unsupported proof type: %s", proof.Type)
-			}
-			if proof.ProofPurpose != "authentication" {
-				return fmt.Errorf("unsupported proof purpose: %s", proof.ProofPurpose)
-			}
-			if proof.Challenge != challenge {
-				fmt.Printf("proof.challenge: %s, expected: %s\n", proof.Challenge, challenge)
-				return fmt.Errorf("challenge mismatch")
-			}
-			if !strings.Contains(proof.VerificationMethod, prevEntry.Params.UpdateKeys[0]) {
-				return fmt.Errorf("proof must be signed with the update key from the previous log entry")
-			}
-
-			var hashfn hash.Hash
-			keyType, pubKey, err := extractPubKey(proof.VerificationMethod)
+			doc, err := log[:i+1].Document()
 			if err != nil {
-				return fmt.Errorf("failed to extract public key from verification method: %w", err)
+				return fmt.Errorf("failed to get document: %w", err)
 			}
 
-			// set hash function based on cryptosuite and key type
-			switch proof.Cryptosuite {
-			case CRYPTO_SUITE_ECDSA_JCS_2019:
-				switch multicodec.Code(keyType) {
-				case multicodec.P256Pub:
-					hashfn = sha256.New()
-				case multicodec.P384Pub:
-					hashfn = sha512.New384()
-				default:
-					return fmt.Errorf("incompatible key type '%s' for cryptosuite '%s'", multicodec.Code(keyType), proof.Cryptosuite)
-				}
-			case CRYPTO_SUITE_EDDSA_JCS_2022:
-				if multicodec.Code(keyType) != multicodec.Ed25519Pub {
-					return fmt.Errorf("incompatible key type '%s' for cryptosuite '%s'", multicodec.Code(keyType), proof.Cryptosuite)
-				}
-				hashfn = sha256.New()
-			default:
-				return fmt.Errorf("unsupported cryptosuite: %s", proof.Cryptosuite)
-			}
-
-			input, err := log.hashLogVersion(entry.VersionId.Version, proof, hashfn)
-			if err != nil {
-				return fmt.Errorf("failed to hash entry: %w", err)
-			}
-
-			proofValue := proof.ProofValue
-			_, signature, err := multibase.Decode(proofValue)
-			if err != nil {
-				return fmt.Errorf("failed to decode proof value: %w", err)
-			}
-			fmt.Printf("signature: %x\n", signature)
-			fmt.Printf("signature length: %d\n", len(signature))
-
-			switch pubKey := pubKey.(type) {
-			case *ecdsa.PublicKey:
-				// a acdsa signature can be either 2 concatenated integers or asn1 encoded
-				// This code checks if the signature valid asn1 encoded:
-				// _, err = parseSig(signature, false)
-				// if err != nil {
-				// 	return fmt.Errorf("failed to parse signature: %w", err)
-				// }
-				// split the signature in half to get the r and s values
-				r := big.NewInt(0).SetBytes(signature[:len(signature)/2])
-				s := big.NewInt(0).SetBytes(signature[len(signature)/2:])
-
-				// try both type of signature encoding
-				if !ecdsa.Verify(pubKey, input, r, s) {
-					// try the other way around:
-					r = big.NewInt(0).SetBytes(signature[len(signature)/2:])
-					s = big.NewInt(0).SetBytes(signature[:len(signature)/2])
-					if !ecdsa.Verify(pubKey, input, r, s) &&
-						!ecdsa.VerifyASN1(pubKey, input, signature) {
-						return fmt.Errorf("failed to verify proof")
-					}
-				}
-			case ed25519.PublicKey:
-				if !ed25519.Verify(pubKey, input, signature) {
-					return fmt.Errorf("failed to verify proof")
-				}
-			default:
-				return fmt.Errorf("unsupported public key type: %T", pubKey)
-			}
+			return proof.Verify(challenge, prevEntry.Params.UpdateKeys, doc)
 		}
 	}
 
