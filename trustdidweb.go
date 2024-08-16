@@ -138,8 +138,8 @@ func NewEntryHash(data []byte, hashType uint64) EntryHash {
 		return ""
 	}
 
-	scid := b58.EncodeAlphabet(b, b58.BTCAlphabet)
-	return EntryHash([]byte(scid))
+	hash := b58.EncodeAlphabet(b, b58.BTCAlphabet)
+	return EntryHash([]byte(hash))
 }
 
 func (s EntryHash) Verify(data []byte) error {
@@ -422,15 +422,6 @@ func NewSigner(cryptoSuite string) (crypto.Signer, error) {
 	}
 }
 
-func verificationMethodFromSigner(signer crypto.Signer) (string, error) {
-	pubKey := signer.Public()
-	encodedKey, err := encodePubKey(pubKey)
-	if err != nil {
-		return "", fmt.Errorf("failed to encode public key: %w", err)
-	}
-	return fmt.Sprintf("did:key:%s#%s", encodedKey, encodedKey), nil
-}
-
 func (log DIDLog) buildProof(version int, signer crypto.Signer) (Proof, error) {
 	fmt.Print("\n\nbuildProof:\n\n")
 
@@ -523,40 +514,6 @@ func extractEcdsaPubKey(key []byte, curve elliptic.Curve) (crypto.PublicKey, err
 	}, nil
 }
 
-func extractPubKey(verificationMethod string) (uint64, crypto.PublicKey, error) {
-	encodedPubKey := strings.Split(verificationMethod, "#")[1]
-	_, multibaseKey, err := multibase.Decode(encodedPubKey)
-	if err != nil {
-		return 0, nil, fmt.Errorf("failed to decode verificationMethod: %w", err)
-	}
-
-	keyType, n := binary.Uvarint(multibaseKey)
-	if n <= 0 {
-		return 0, nil, fmt.Errorf("invalid multibase key type header")
-	}
-	keyBytes := multibaseKey[n:]
-
-	var pubKey crypto.PublicKey
-
-	switch multicodec.Code(keyType) {
-	case multicodec.P256Pub:
-		pubKey, err = extractEcdsaPubKey(keyBytes, elliptic.P256())
-	case multicodec.P384Pub:
-		pubKey, err = extractEcdsaPubKey(keyBytes, elliptic.P384())
-	case multicodec.Ed25519Pub:
-		pubKey = ed25519.PublicKey(keyBytes)
-	default:
-		return 0, nil, fmt.Errorf("unsupported key type: %x", keyType)
-	}
-
-	if err != nil {
-		return 0, nil, fmt.Errorf("failed to extract public key: %w", err)
-	}
-
-	return keyType, pubKey, nil
-
-}
-
 func (log DIDLog) calculateVersionId(version int) (versionId, error) {
 	var entry LogEntry
 	var prevVersionId versionId
@@ -564,6 +521,7 @@ func (log DIDLog) calculateVersionId(version int) (versionId, error) {
 	case 0:
 		entry = log[0]
 		prevVersionId = versionId{Version: 0, Hash: EntryHash("{SCID}")}
+		entry.Params.Scid = "{SCID}"
 	case 1:
 		entry = log[0]
 		prevVersionId = versionId{Version: 0, Hash: EntryHash(entry.Params.Scid)}
@@ -581,25 +539,77 @@ func (log DIDLog) calculateVersionId(version int) (versionId, error) {
 }
 
 func (log DIDLog) Verify() error {
-	fmt.Print("\n\nVerify:\n\n")
+	// empty log should not be considered valid
+	if len(log) == 0 {
+		return fmt.Errorf("empty log")
+	}
+
+	var scid string
 
 	for i, entry := range log {
+
 		if i+1 != entry.VersionId.Version {
-			return fmt.Errorf("log entries are not in sequence")
+			return fmt.Errorf("invalid log sequence number, expected: %d, got: %d", i+1, entry.VersionId.Version)
+		}
+
+		if i == 0 {
+			if entry.Params.Scid == "" {
+				return fmt.Errorf("missing scid in the first log entry params")
+			}
+
+			if entry.DocState.Value == nil {
+				return fmt.Errorf("missing docstate value in the first log entry")
+			}
+			// check the scid
+			scid = entry.Params.Scid
+
+			// create a copy
+			var initEntry LogEntry
+			entryBytes, err := json.Marshal(entry)
+			if err != nil {
+				return fmt.Errorf("failed to marshal entry: %w", err)
+			}
+			err = json.Unmarshal(entryBytes, &initEntry)
+			if err != nil {
+				return fmt.Errorf("failed to unmarshal entry: %w", err)
+			}
+
+			// replace all instances of the scid with the placeholder
+			docBytes, err := json.Marshal(initEntry.DocState.Value)
+			if err != nil {
+				return fmt.Errorf("failed to marshal docstate: %w", err)
+			}
+			initialDoc := strings.ReplaceAll(string(docBytes), scid, "{SCID}")
+			err = json.Unmarshal([]byte(initialDoc), &initEntry.DocState.Value)
+			if err != nil {
+				return fmt.Errorf("failed to unmarshal docstate: %w", err)
+			}
+
+			calculatedVersionId, err := DIDLog{initEntry}.calculateVersionId(0)
+			if err != nil {
+				return fmt.Errorf("failed to calculate scid: %w", err)
+			}
+			if scid != string(calculatedVersionId.Hash) {
+				return fmt.Errorf("invalid scid")
+			}
+		} else {
+			// check if the scid is the same as the first one
+			if entry.Params.Scid != "" && entry.Params.Scid != scid {
+				return fmt.Errorf("scid cannot be changed")
+			}
 		}
 
 		// previous entry needed to verify if the correct key was used
 		var prevEntry LogEntry
+		var versionHash EntryHash
+
 		if i > 0 {
 			prevEntry = log[i-1]
+			versionHash = EntryHash(prevEntry.VersionId.Hash)
 		} else {
 			prevEntry = entry
-		}
-
-		var versionHash EntryHash
-		// first entry uses the scid instead of the previous version hash
-		if i == 0 {
-			versionHash = EntryHash(prevEntry.Params.Scid)
+			// first entry uses the scid instead of the previous version hash
+			versionHash = EntryHash(entry.Params.Scid)
 		}
 
 		calculatedVersionHash, err := entry.calculateEntryHash(versionId{Hash: versionHash})
@@ -607,7 +617,7 @@ func (log DIDLog) Verify() error {
 			return fmt.Errorf("failed to calculate entry hash: %w", err)
 		}
 		if entry.VersionId.Hash != EntryHash(calculatedVersionHash) {
-			return fmt.Errorf("version hash mismatch, expected: %s, got: %s", calculatedVersionHash, entry.VersionId.Hash)
+			return fmt.Errorf("failed to verify entry hash")
 		}
 		challenge := entry.VersionId.String()
 

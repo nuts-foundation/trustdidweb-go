@@ -1,11 +1,14 @@
 package trustdidweb
 
 import (
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"hash"
 	"math/big"
@@ -19,13 +22,65 @@ import (
 )
 
 type Proof struct {
-	Type               string `json:"type"`
-	Cryptosuite        string `json:"cryptosuite"`
-	VerificationMethod string `json:"verificationMethod"`
-	Created            string `json:"created"`
-	ProofPurpose       string `json:"proofPurpose"`
-	Challenge          string `json:"challenge"`
-	ProofValue         string `json:"proofValue,omitempty"`
+	Type               string             `json:"type"`
+	Cryptosuite        string             `json:"cryptosuite"`
+	VerificationMethod verificationMethod `json:"verificationMethod"`
+	Created            string             `json:"created"`
+	ProofPurpose       string             `json:"proofPurpose"`
+	Challenge          string             `json:"challenge"`
+	ProofValue         string             `json:"proofValue,omitempty"`
+}
+
+// verificationMethod represents a did:key verification method
+type verificationMethod string
+
+func (verificationMethod verificationMethod) PublicKey() (uint64, crypto.PublicKey, error) {
+	if !strings.HasPrefix(string(verificationMethod), "did:key:") {
+		return 0, nil, fmt.Errorf("verificationmethod must be a did:key method")
+	}
+	encodedPubKey := strings.Split(string(verificationMethod), "#")[1]
+	_, multibaseKey, err := multibase.Decode(encodedPubKey)
+	if err != nil {
+		return 0, nil, fmt.Errorf("failed to decode verificationMethod: %w", err)
+	}
+
+	keyType, n := binary.Uvarint(multibaseKey)
+	if n <= 0 {
+		return 0, nil, fmt.Errorf("invalid multibase key type header")
+	}
+	keyBytes := multibaseKey[n:]
+
+	var pubKey crypto.PublicKey
+
+	switch multicodec.Code(keyType) {
+	case multicodec.P256Pub:
+		pubKey, err = extractEcdsaPubKey(keyBytes, elliptic.P256())
+	case multicodec.P384Pub:
+		pubKey, err = extractEcdsaPubKey(keyBytes, elliptic.P384())
+	case multicodec.Ed25519Pub:
+		pubKey = ed25519.PublicKey(keyBytes)
+	default:
+		return 0, nil, fmt.Errorf("unsupported key type: %x", keyType)
+	}
+
+	if err != nil {
+		return 0, nil, fmt.Errorf("failed to extract public key: %w", err)
+	}
+
+	return keyType, pubKey, nil
+}
+
+func (verificationMethod verificationMethod) toUpdateKey() string {
+	return strings.Split(string(verificationMethod), "#")[1]
+}
+
+func verificationMethodFromSigner(signer crypto.Signer) (verificationMethod, error) {
+	pubKey := signer.Public()
+	encodedKey, err := encodePubKey(pubKey)
+	if err != nil {
+		return "", fmt.Errorf("failed to encode public key: %w", err)
+	}
+	return verificationMethod(fmt.Sprintf("did:key:%s#%s", encodedKey, encodedKey)), nil
 }
 
 func (proof Proof) Verify(challenge string, updateKeys []string, doc map[string]interface{}) error {
@@ -40,13 +95,13 @@ func (proof Proof) Verify(challenge string, updateKeys []string, doc map[string]
 		return fmt.Errorf("challenge mismatch")
 	}
 
-	verificationMethod := strings.Split(proof.VerificationMethod, "#")[1]
-	if !slices.Contains(updateKeys, verificationMethod) {
+	updateKey := proof.VerificationMethod.toUpdateKey()
+	if !slices.Contains(updateKeys, updateKey) {
 		return fmt.Errorf("proof must be signed with an active update key")
 	}
 
 	var hashfn hash.Hash
-	keyType, pubKey, err := extractPubKey(proof.VerificationMethod)
+	keyType, pubKey, err := proof.VerificationMethod.PublicKey()
 	if err != nil {
 		return fmt.Errorf("failed to extract public key from verification method: %w", err)
 	}

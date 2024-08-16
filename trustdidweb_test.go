@@ -294,6 +294,62 @@ func TestVerifyProof(t *testing.T) {
 	})
 }
 
+func TestDIDLogVerify(t *testing.T) {
+	t.Run("ok", func(t *testing.T) {
+		entry := LogEntry{}
+		err := entry.UnmarshalJSONL([]byte(testVector1.log[0]))
+		require.NoError(t, err)
+		err = DIDLog{entry}.Verify()
+		assert.NoError(t, err)
+	})
+
+	t.Run("nok - empty log", func(t *testing.T) {
+		err := DIDLog{}.Verify()
+		assert.EqualError(t, err, "empty log")
+	})
+
+	t.Run("nok - log version must be in sequence and start with 1", func(t *testing.T) {
+		entry := LogEntry{VersionId: versionId{Version: 4}}
+		err := DIDLog{entry}.Verify()
+		assert.EqualError(t, err, "invalid log sequence number, expected: 1, got: 4")
+	})
+
+	t.Run("nok - invalid version hash", func(t *testing.T) {
+		entry := LogEntry{
+			VersionId: versionId{Version: 1, Hash: "invalid"},
+			Params:    LogParams{Scid: "QmNTqTWceqobjeFFAMdJRTJCbtPfhVRuCYrvC3bTV1RYh1"},
+			DocState:  docState{Value: map[string]interface{}{"foo": "bar"}},
+		}
+
+		err := DIDLog{entry}.Verify()
+		assert.EqualError(t, err, "failed to verify entry hash")
+	})
+
+	t.Run("nok - invalid scid", func(t *testing.T) {
+		entry := LogEntry{VersionId: versionId{Version: 0}, DocState: docState{Value: map[string]interface{}{"foo": "bar"}}}
+		version, err := DIDLog{entry}.calculateVersionId(0)
+		require.NoError(t, err)
+		entry.VersionId = version
+		entry.Params.Scid = "invalid"
+		version, err = DIDLog{entry}.calculateVersionId(1)
+		require.NoError(t, err)
+		entry.VersionId = version
+		err = DIDLog{entry}.Verify()
+		assert.EqualError(t, err, "invalid scid")
+	})
+
+	t.Run("multiple entries", func(t *testing.T) {
+		t.Run("nok - a scid cannot be changed", func(t *testing.T) {
+			t.Skipf("not implemented")
+		})
+
+		t.Run("nok - an empty updateKeys array should not remove previously published keys", func(t *testing.T) {
+			t.Skipf("not implemented")
+		})
+	})
+
+}
+
 func TestUpdate(t *testing.T) {
 	t.Run("ok", func(t *testing.T) {
 		signer, err := NewSigner(CRYPTO_SUITE_EDDSA_JCS_2022)
