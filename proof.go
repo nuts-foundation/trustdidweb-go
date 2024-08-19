@@ -74,6 +74,19 @@ func (verificationMethod verificationMethod) toUpdateKey() string {
 	return strings.Split(string(verificationMethod), "#")[1]
 }
 
+// extractEcdsaPubKey is a helper func that takes a byte slice with the compressed ecdsa public key and returns a ecdsa.PublicKey
+func extractEcdsaPubKey(key []byte, curve elliptic.Curve) (crypto.PublicKey, error) {
+	x, y := elliptic.UnmarshalCompressed(curve, key)
+	if x == nil {
+		return nil, fmt.Errorf("failed to unmarshal compressed public key")
+	}
+	return &ecdsa.PublicKey{
+		Curve: curve,
+		X:     x,
+		Y:     y,
+	}, nil
+}
+
 func verificationMethodFromSigner(signer crypto.Signer) (verificationMethod, error) {
 	pubKey := signer.Public()
 	encodedKey, err := encodePubKey(pubKey)
