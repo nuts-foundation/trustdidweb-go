@@ -35,7 +35,7 @@ const CRYPTO_SUITE_ECDSA_JCS_2019 = "ecdsa-jcs-2019"
 const CRYPTO_SUITE_EDDSA_JCS_2022 = "eddsa-jcs-2022"
 
 type docState struct {
-	Value interface{} `json:"value,omitempty"`
+	Value DIDDocument `json:"value,omitempty"`
 	Patch interface{} `json:"patch,omitempty"`
 }
 
@@ -195,7 +195,7 @@ func (log *DIDLog) UnmarshalText(b []byte) error {
 }
 
 // Returns the DID Document created from applying all the log entries
-func (log DIDLog) Document() (map[string]interface{}, error) {
+func (log DIDLog) Document() (DIDDocument, error) {
 	if len(log) == 0 {
 		return nil, fmt.Errorf("empty log")
 	}
@@ -241,7 +241,7 @@ func (log DIDLog) Document() (map[string]interface{}, error) {
 
 	logger().Debug("document", "doc", string(docBytes))
 
-	doc := map[string]interface{}{}
+	doc := DIDDocument{}
 	if err := json.Unmarshal(docBytes, &doc); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal document: %w", err)
 	}
@@ -298,29 +298,49 @@ func ParseLog(b []byte) (DIDLog, error) {
 	return log, err
 }
 
+type DIDDocument map[string]interface{}
+
+func NewMinimalDIDDocument(didTemplate string) (DIDDocument, error) {
+	if !strings.HasPrefix(didTemplate, "did:tdw:{SCID}") {
+		return nil, fmt.Errorf("invalid did template: missing required 'did:tdw:{SCID}' prefix")
+	}
+
+	doc := map[string]interface{}{
+		"@context": []interface{}{
+			"https://www.w3.org/ns/did/v1",
+		},
+		"id": renderPathTemplate(didTemplate, "{SCID}"),
+	}
+
+	return doc, nil
+}
+
+// ReplaceSCIDPlaceholder replaces the {SCID} placeholder in the document with the provided SCID
+func (doc *DIDDocument) ReplaceSCIDPlaceholder(scid string) error {
+	docAsBytes, err := json.Marshal(doc)
+	if err != nil {
+		return fmt.Errorf("failed to marshal document: %w", err)
+	}
+	docAsBytes = []byte(strings.ReplaceAll(string(docAsBytes), "{SCID}", scid))
+
+	var newDoc DIDDocument
+	if err := json.Unmarshal(docAsBytes, &newDoc); err != nil {
+		return fmt.Errorf("failed to unmarshal document: %w", err)
+	}
+	*doc = newDoc
+	return nil
+}
+
 // Create creates a new DIDLog with a single log entry
 // It calculates the SCID of the first log entry and replaces the placeholder in the path template
 // It signs the entry with the provided signer
-func Create(didTemplate string, signer crypto.Signer, nextKeyhashes []string) (DIDLog, error) {
+func Create(doc DIDDocument, signer crypto.Signer, nextKeyhashes []string) (DIDLog, error) {
 	params, err := NewInitialParams([]crypto.PublicKey{signer.Public()}, nextKeyhashes)
 	if err != nil {
 		return nil, err
 	}
 
-	// set SCID to the placeholder value
-	scid := "{SCID}"
-
-	doc := map[string]interface{}{
-		"@context": []interface{}{
-			"https://www.w3.org/ns/did/v1", "https://w3id.org/security/multikey/v1",
-		},
-		"id": renderPathTemplate(didTemplate, scid),
-	}
-
-	params.Scid = scid
-
 	le := LogEntry{
-		VersionId:   versionId{Version: 0, Hash: EntryHash(scid)},
 		DocState:    docState{Value: doc},
 		Params:      params,
 		VersionTime: timeFunc(),
@@ -333,12 +353,12 @@ func Create(didTemplate string, signer crypto.Signer, nextKeyhashes []string) (D
 	if err != nil {
 		return nil, err
 	}
-	scid = string(versionId.Hash)
+	scid := string(versionId.Hash)
 
 	logger().Debug("create", "scid", scid)
 
 	// replace placeholders with the actual values containing the did string
-	le.DocState.Value.(map[string]interface{})["id"] = renderPathTemplate(didTemplate, scid)
+	le.DocState.Value.ReplaceSCIDPlaceholder(scid)
 	le.Params.Scid = scid
 	le.VersionId = versionId
 
@@ -350,7 +370,7 @@ func Create(didTemplate string, signer crypto.Signer, nextKeyhashes []string) (D
 
 	logger().Debug("create", "entry", le)
 
-	proof, err := DIDLog{le}.buildProof(1, signer)
+	proof, err := DIDLog{le}.buildProof(signer)
 	if err != nil {
 		return nil, err
 	}
@@ -402,7 +422,7 @@ func Update(log DIDLog, params LogParams, modifiedDoc map[string]interface{}, si
 	}
 	entry.VersionId = versionId
 
-	proof, err := append(log, entry).buildProof(entry.VersionId.Version, signer)
+	proof, err := append(log, entry).buildProof(signer)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build proof: %w", err)
 	}
@@ -424,10 +444,11 @@ func NewSigner(cryptoSuite string) (crypto.Signer, error) {
 	}
 }
 
-func (log DIDLog) buildProof(version int, signer crypto.Signer) (Proof, error) {
+// buildProof creates a proof for the latest entry in the log
+func (log DIDLog) buildProof(signer crypto.Signer) (Proof, error) {
 	fmt.Print("\n\nbuildProof:\n\n")
 
-	entry := log[version-1]
+	entry := log[len(log)-1]
 
 	verificationMethod, err := verificationMethodFromSigner(signer)
 	if err != nil {
@@ -630,8 +651,8 @@ func (log DIDLog) Verify() error {
 		challenge := entry.VersionId.String()
 		updateKeys := log[:i].UpdateKeys()
 
+		// first entry uses its own update keys
 		if i == 0 {
-			// first entry uses its own update keys
 			updateKeys = log[:i+1].UpdateKeys()
 		}
 
@@ -675,7 +696,6 @@ func (log DIDLog) UpdateKeys() []string {
 	}
 	var updateKeys []string
 
-	// exclude the last entry since this entry is not active
 	for _, entry := range log {
 		if entry.Params.Deactivated {
 			return nil
@@ -692,7 +712,6 @@ func (log DIDLog) Deactivated() bool {
 	if len(log) == 0 {
 		return false
 	}
-	// exclude the last entry since this entry is not active
 	for _, entry := range log {
 		if entry.Params.Deactivated {
 			return true

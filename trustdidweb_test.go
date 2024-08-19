@@ -173,20 +173,25 @@ func TestCreate(t *testing.T) {
 
 		// use the template of the test vector
 		signer := testVector1.signer(t)
-		logEntries, err := Create(testVector1.pathTemplate, signer, testLogEntry.Params.NextKeyHashes)
+		doc, err := NewMinimalDIDDocument(testVector1.pathTemplate)
+		// add the multikey context to match the document of the test vector
+		map[string]interface{}(doc)["@context"] = []string{"https://www.w3.org/ns/did/v1", "https://w3id.org/security/multikey/v1"}
+		require.NoError(t, err)
+		log, err := Create(doc, signer, testLogEntry.Params.NextKeyHashes)
 
 		require.NoError(t, err)
-		require.Len(t, logEntries, 1)
+		require.Len(t, log, 1)
 
 		// check if the resulting log entry (including the proof) is the same as the test vector
-		assert.Equal(t, testLogEntry, logEntries[0])
+		assert.Equal(t, DIDLog{testLogEntry}, log)
 	})
 
 	t.Run("ok - ecdsa-jcs-2019", func(t *testing.T) {
 		signer, err := NewSigner(CRYPTO_SUITE_ECDSA_JCS_2019)
 		require.NoError(t, err)
+		doc, err := NewMinimalDIDDocument("did:tdw:{SCID}:example.com")
 		require.NoError(t, err)
-		log, err := Create("did:tdw:{SCID}:example.com", signer, nil)
+		log, err := Create(doc, signer, nil)
 		require.NoError(t, err)
 		require.Len(t, log, 1)
 		err = log.Verify()
@@ -196,8 +201,9 @@ func TestCreate(t *testing.T) {
 	t.Run("ok - eddsa-jcs-2022", func(t *testing.T) {
 		signer, err := NewSigner(CRYPTO_SUITE_EDDSA_JCS_2022)
 		require.NoError(t, err)
+		doc, err := NewMinimalDIDDocument("did:tdw:{SCID}:example.com")
 		require.NoError(t, err)
-		log, err := Create("did:tdw:{SCID}:example.com", signer, nil)
+		log, err := Create(doc, signer, nil)
 		require.NoError(t, err)
 		require.Len(t, log, 1)
 		err = log.Verify()
@@ -481,11 +487,13 @@ func TestUpdate(t *testing.T) {
 		// params, err := tdw.NewParams([]crypto.PublicKey{signer.Public()}, nil)
 		// require.NoError(t, err)
 
-		log, err := Create("did:tdw:{SCID}:example.com", signer, nil)
+		doc, err := NewMinimalDIDDocument("did:tdw:{SCID}:example.com")
+		require.NoError(t, err)
+		log, err := Create(doc, signer, nil)
 		require.NoError(t, err)
 		require.Len(t, log, 1)
 
-		doc, err := log.Document()
+		doc, err = log.Document()
 		require.NoError(t, err)
 		require.NotNil(t, doc)
 

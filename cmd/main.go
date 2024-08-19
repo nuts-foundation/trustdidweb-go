@@ -23,7 +23,12 @@ func main() {
 	}
 
 	// Create a new DIDLog
-	log, err := tdw.Create("did:tdw:{SCID}:example.com", signer, nil)
+	doc, err := tdw.MinimalDIDDocument("did:tdw:{SCID}:example.com")
+	if err != nil {
+		panic(err)
+	}
+
+	log, err := tdw.Create(doc, signer, nil)
 	if err != nil {
 		panic(err)
 	}
@@ -39,7 +44,7 @@ func main() {
 	fmt.Println(string(entryLine))
 
 	// Print the resulting document:
-	doc, err := log.Document()
+	doc, err = log.Document()
 	if err != nil {
 		panic(err)
 	}
