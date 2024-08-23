@@ -89,14 +89,14 @@ func extractEcdsaPubKey(key []byte, curve elliptic.Curve) (crypto.PublicKey, err
 
 func verificationMethodFromSigner(signer crypto.Signer) (verificationMethod, error) {
 	pubKey := signer.Public()
-	encodedKey, err := encodePubKey(pubKey)
+	encodedKey, err := NewUpdateKey(pubKey)
 	if err != nil {
 		return "", fmt.Errorf("failed to encode public key: %w", err)
 	}
 	return verificationMethod(fmt.Sprintf("did:key:%s#%s", encodedKey, encodedKey)), nil
 }
 
-func (proof Proof) Verify(challenge string, updateKeys []string, doc map[string]interface{}) error {
+func (proof Proof) Verify(challenge string, updateKeys []string, doc DIDDocument) error {
 	if proof.Type != "DataIntegrityProof" {
 		return fmt.Errorf("unsupported proof type: %s", proof.Type)
 	}

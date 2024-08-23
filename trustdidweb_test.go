@@ -41,6 +41,18 @@ type testVector struct {
 	log          []string
 }
 
+func parseJWKPrivateKey(t *testing.T, jwkString string) crypto.PrivateKey {
+	t.Helper()
+	privKey, err := jwk.ParseKey([]byte(jwkString))
+	require.NoError(t, err)
+	assert.NotNil(t, privKey)
+
+	var rawKey interface{}
+	err = privKey.Raw(&rawKey)
+	require.NoError(t, err)
+	return rawKey.(crypto.PrivateKey)
+}
+
 func (v testVector) signer(t *testing.T) crypto.Signer {
 	t.Helper()
 	privKey, err := jwk.ParseKey([]byte(v.privKeyJWK))
@@ -173,11 +185,12 @@ func TestCreate(t *testing.T) {
 
 		// use the template of the test vector
 		signer := testVector1.signer(t)
+
 		doc, err := NewMinimalDIDDocument(testVector1.pathTemplate)
+		require.NoError(t, err)
 		// add the multikey context to match the document of the test vector
 		map[string]interface{}(doc)["@context"] = []string{"https://www.w3.org/ns/did/v1", "https://w3id.org/security/multikey/v1"}
-		require.NoError(t, err)
-		log, err := Create(doc, signer, testLogEntry.Params.NextKeyHashes)
+		log, err := Create(doc, signer, testLogEntry.Params.NextKeyHashes...)
 
 		require.NoError(t, err)
 		require.Len(t, log, 1)
@@ -191,7 +204,7 @@ func TestCreate(t *testing.T) {
 		require.NoError(t, err)
 		doc, err := NewMinimalDIDDocument("did:tdw:{SCID}:example.com")
 		require.NoError(t, err)
-		log, err := Create(doc, signer, nil)
+		log, err := Create(doc, signer)
 		require.NoError(t, err)
 		require.Len(t, log, 1)
 		err = log.Verify()
@@ -203,7 +216,7 @@ func TestCreate(t *testing.T) {
 		require.NoError(t, err)
 		doc, err := NewMinimalDIDDocument("did:tdw:{SCID}:example.com")
 		require.NoError(t, err)
-		log, err := Create(doc, signer, nil)
+		log, err := Create(doc, signer)
 		require.NoError(t, err)
 		require.Len(t, log, 1)
 		err = log.Verify()
@@ -398,10 +411,10 @@ func TestDIDLogVerify(t *testing.T) {
 
 			signer := testVector1.signer(t)
 
-			log, err = Update(log, LogParams{}, doc, signer)
+			log, err = log.Update(LogParams{}, doc, signer)
 			require.NoError(t, err)
 
-			log, err = Update(log, LogParams{}, doc, signer)
+			log, err = log.Update(LogParams{}, doc, signer)
 			require.NoError(t, err)
 
 			err = log.Verify()
@@ -420,14 +433,14 @@ func TestDIDLogVerify(t *testing.T) {
 
 			signer := testVector1.signer(t)
 
-			log, err = Update(log, LogParams{UpdateKeys: []string{"fooKey"}}, doc, signer)
+			log, err = log.Update(LogParams{UpdateKeys: []string{}}, doc, signer)
 			require.NoError(t, err)
 			err = log.Verify()
 			require.NoError(t, err)
 
-			assert.Equal(t, []string{"fooKey"}, log.UpdateKeys())
+			assert.Equal(t, []string{}, log.getUpdateKeys())
 
-			log, err = Update(log, LogParams{}, doc, signer)
+			log, err = log.Update(LogParams{}, doc, signer)
 			require.NoError(t, err)
 
 			err = log.Verify()
@@ -448,18 +461,86 @@ func TestDIDLogVerify(t *testing.T) {
 
 			signer := testVector1.signer(t)
 
-			log, err = Update(log, LogParams{Deactivated: true}, doc, signer)
+			log, err = log.Update(LogParams{Deactivated: true}, doc, signer)
 			require.NoError(t, err)
-			require.True(t, log.Deactivated(), "log should be deactivated")
+			require.True(t, log.IsDeactivated(), "log should be deactivated")
 			err = log.Verify()
 			require.NoError(t, err)
 
-			log, err = Update(log, LogParams{Deactivated: false}, doc, signer)
+			log, err = log.Update(LogParams{Deactivated: false}, doc, signer)
 			require.NoError(t, err)
 
 			err = log.Verify()
 			assert.EqualError(t, err, "invalid entry after deactivation")
 		})
+
+	})
+}
+
+func TestPreRotation(t *testing.T) {
+	t.Run("ok", func(t *testing.T) {
+		signer1, err := NewSigner(CRYPTO_SUITE_EDDSA_JCS_2022)
+		require.NoError(t, err)
+		signer2, err := NewSigner(CRYPTO_SUITE_EDDSA_JCS_2022)
+		require.NoError(t, err)
+
+		doc, err := NewMinimalDIDDocument("did:tdw:{SCID}:example.com")
+		require.NoError(t, err)
+
+		keyHash, err := NewNextKeyHash(signer2.Public())
+		require.NoError(t, err)
+
+		log, err := Create(doc, signer1, keyHash)
+		require.NoError(t, err)
+
+		err = log.Verify()
+		assert.NoError(t, err)
+
+		doc, err = log.Document()
+		require.NoError(t, err)
+
+		doc["service"] = []interface{}{
+			map[string]interface{}{
+				"foo-service": "https://example.com/service/1",
+			}}
+
+		// try updating the log with the next key which is not yet active
+		log, err = log.Update(LogParams{}, doc, signer2)
+		assert.NoError(t, err)
+		err = log.Verify()
+		assert.EqualError(t, err, "proof must be signed with an active update key")
+
+		// try to activate a new updateKey not in the nextKeyHashes list
+		log = log[:1]
+		signer3, err := NewSigner(CRYPTO_SUITE_EDDSA_JCS_2022)
+		require.NoError(t, err)
+		updateKey, err := NewUpdateKey(signer3.Public())
+		require.NoError(t, err)
+		log, err = log.Update(LogParams{UpdateKeys: []string{updateKey}, NextKeyHashes: []NextKeyHash{}}, doc, signer1)
+		require.NoError(t, err)
+		err = log.Verify()
+		assert.EqualError(t, err, "update key must be in the active nextKeyHashes list")
+
+		// activate next update key with current update key:
+		log = log[:1]
+		updateKey, err = NewUpdateKey(signer2.Public())
+		require.NoError(t, err)
+		log, err = log.Update(LogParams{UpdateKeys: []string{updateKey}, NextKeyHashes: []NextKeyHash{}}, doc, signer1)
+		require.NoError(t, err)
+		err = log.Verify()
+		assert.NoError(t, err)
+
+		// update the log with the new key
+		log, err = log.Update(LogParams{}, doc, signer2)
+		require.NoError(t, err)
+		err = log.Verify()
+		assert.NoError(t, err)
+
+		// the old key should no longer be valid
+		log, err = log.Update(LogParams{}, doc, signer1)
+		require.NoError(t, err)
+		err = log.Verify()
+		assert.EqualError(t, err, "proof must be signed with an active update key")
 	})
 }
 
@@ -474,9 +555,9 @@ func TestDIDLogDeactivate(t *testing.T) {
 		require.NoError(t, err)
 
 		signer := testVector1.signer(t)
-		log, err = Deactivate(log, signer)
+		log, err = log.Deactivate(signer)
 		assert.NoError(t, err)
-		assert.True(t, log.Deactivated())
+		assert.True(t, log.IsDeactivated())
 	})
 }
 
@@ -489,7 +570,7 @@ func TestUpdate(t *testing.T) {
 
 		doc, err := NewMinimalDIDDocument("did:tdw:{SCID}:example.com")
 		require.NoError(t, err)
-		log, err := Create(doc, signer, nil)
+		log, err := Create(doc, signer)
 		require.NoError(t, err)
 		require.Len(t, log, 1)
 
@@ -502,7 +583,7 @@ func TestUpdate(t *testing.T) {
 				"foo-service": "https://example.com/service/1",
 			}}
 
-		log, err = Update(log, LogParams{}, doc, signer)
+		log, err = log.Update(LogParams{}, doc, signer)
 		assert.NoError(t, err)
 		assert.Len(t, log, 2)
 
@@ -537,7 +618,7 @@ func testLogEntry1(t *testing.T) LogEntry {
 			Scid:          "{SCID}",
 			Prerotation:   true,
 			UpdateKeys:    []string{"z82LkqR25TU88tztBEiFydNf4fUPn8oWBANckcmuqgonz9TAbK9a7WGQ5dm7jyqyRMpaRAe"},
-			NextKeyHashes: []string{"enkkrohe5ccxyc7zghic6qux5inyzthg2tqka4b57kvtorysc3aa"},
+			NextKeyHashes: []NextKeyHash{"enkkrohe5ccxyc7zghic6qux5inyzthg2tqka4b57kvtorysc3aa"},
 		},
 		DocState: docState{Value: doc},
 	}
@@ -560,7 +641,7 @@ func logEntryTestVector1(t *testing.T) LogEntry {
 			Scid:          "Qma6mc1qZw3NqxwX6SB5GPQYzP4pGN2nXD15Jwi4bcDBKu",
 			Prerotation:   true,
 			UpdateKeys:    []string{"z82LkvR3CBNkb9tUVps4GhGpNvEVP6vWzdwgGwQbA1iYoZwd7m1F1hSvkJFSe6sWci7JiXc"},
-			NextKeyHashes: []string{"QmcbM5bppyT4yyaL35TQQJ2XdSrSNAhH5t6f4ZcuyR4VSv"},
+			NextKeyHashes: []NextKeyHash{"QmcbM5bppyT4yyaL35TQQJ2XdSrSNAhH5t6f4ZcuyR4VSv"},
 		},
 		DocState: docState{
 			Value: map[string]interface{}{
@@ -636,7 +717,7 @@ func testLogEntry2(t *testing.T) LogEntry {
 			Scid:          "{SCID}",
 			Prerotation:   true,
 			UpdateKeys:    []string{"z82LkvR3CBNkb9tUVps4GhGpNvEVP6vWzdwgGwQbA1iYoZwd7m1F1hSvkJFSe6sWci7JiXc"},
-			NextKeyHashes: []string{"QmcbM5bppyT4yyaL35TQQJ2XdSrSNAhH5t6f4ZcuyR4VSv"},
+			NextKeyHashes: []NextKeyHash{"QmcbM5bppyT4yyaL35TQQJ2XdSrSNAhH5t6f4ZcuyR4VSv"},
 		},
 		DocState: docState{Value: doc},
 	}
@@ -680,7 +761,7 @@ func TestCalculateVersionID(t *testing.T) {
 
 func TestEntryHash(t *testing.T) {
 	t.Run("ok", func(t *testing.T) {
-		scid := EntryHash("Qma6mc1qZw3NqxwX6SB5GPQYzP4pGN2nXD15Jwi4bcDBKu")
+		scid := entryHash("Qma6mc1qZw3NqxwX6SB5GPQYzP4pGN2nXD15Jwi4bcDBKu")
 		hash, hashType, err := scid.Digest()
 		require.NoError(t, err)
 		assert.Equal(t, uint64(0x12), hashType)
@@ -688,7 +769,7 @@ func TestEntryHash(t *testing.T) {
 	})
 
 	t.Run("nok - invalid length", func(t *testing.T) {
-		scid := EntryHash("Qma6mc1qZw3NqxwX6SB5GPQYzP4pGN2nXD15Jwi4bcDBK")
+		scid := entryHash("Qma6mc1qZw3NqxwX6SB5GPQYzP4pGN2nXD15Jwi4bcDBK")
 		hash, hashType, err := scid.Digest()
 		assert.EqualError(t, err, "invalid digest-value length")
 		assert.Nil(t, hash)
@@ -698,9 +779,32 @@ func TestEntryHash(t *testing.T) {
 
 func TestNewScid(t *testing.T) {
 	t.Run("ok", func(t *testing.T) {
-		scid := NewEntryHash([]byte("hello world"), uint64(multicodec.Sha2_256))
+		scid := newEntryHash([]byte("hello world"), uint64(multicodec.Sha2_256))
 		assert.Equal(t, "QmaozNR7DZHQK1ZcU9p7QdrshMvXqWK6gpu5rmrkPdT3L4", string(scid))
 		err := scid.Verify([]byte("hello world"))
 		assert.NoError(t, err)
+	})
+}
+
+func TestDIDLogUpdateKeys(t *testing.T) {
+	t.Run("ok", func(t *testing.T) {
+		entry := logEntryTestVector1(t)
+		log := DIDLog{entry}
+		keys := log.getUpdateKeys()
+		assert.Equal(t, []string{"z82LkvR3CBNkb9tUVps4GhGpNvEVP6vWzdwgGwQbA1iYoZwd7m1F1hSvkJFSe6sWci7JiXc"}, keys)
+	})
+
+	t.Run("ok - multiple entries", func(t *testing.T) {
+		log := DIDLog{
+			LogEntry{Params: LogParams{UpdateKeys: []string{"123"}}}, // initial vale
+			LogEntry{Params: LogParams{UpdateKeys: []string{"456"}}}, // should overwrite previous value
+			LogEntry{}, // undefined should not overwrite previous value
+			LogEntry{Params: LogParams{UpdateKeys: []string{}}}, // defined but empty value should overwrite previous value
+		}
+
+		assert.Equal(t, log[:1].getUpdateKeys(), []string{"123"})
+		assert.Equal(t, log[:2].getUpdateKeys(), []string{"456"})
+		assert.Equal(t, log[:3].getUpdateKeys(), []string{"456"})
+		assert.Equal(t, log[:4].getUpdateKeys(), []string{})
 	})
 }

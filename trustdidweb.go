@@ -40,7 +40,7 @@ type docState struct {
 
 type versionId struct {
 	Version int
-	Hash    EntryHash
+	Hash    entryHash
 }
 
 func (v *versionId) MarshalJSON() ([]byte, error) {
@@ -82,10 +82,10 @@ func (v *versionId) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-type EntryHash string
+type entryHash string
 
 // Digest returns the digest and the hash function used to create it
-func (s EntryHash) Digest() ([]byte, uint64, error) {
+func (s entryHash) Digest() ([]byte, uint64, error) {
 	decoded, err := b58.DecodeAlphabet(string(s), b58.BTCAlphabet)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to b58 decode scid: %w", err)
@@ -112,7 +112,7 @@ func (s EntryHash) Digest() ([]byte, uint64, error) {
 	return digest, hashType, nil
 }
 
-func NewEntryHash(data []byte, hashType uint64) EntryHash {
+func newEntryHash(data []byte, hashType uint64) entryHash {
 	buf := make([]byte, binary.MaxVarintLen64)
 	n := binary.PutUvarint(buf, hashType)
 	b := buf[:n]
@@ -132,10 +132,10 @@ func NewEntryHash(data []byte, hashType uint64) EntryHash {
 	}
 
 	hash := b58.EncodeAlphabet(b, b58.BTCAlphabet)
-	return EntryHash([]byte(hash))
+	return entryHash([]byte(hash))
 }
 
-func (s EntryHash) Verify(data []byte) error {
+func (s entryHash) Verify(data []byte) error {
 	digest, hashType, err := s.Digest()
 	if err != nil {
 		return err
@@ -155,6 +155,10 @@ func (s EntryHash) Verify(data []byte) error {
 }
 
 type DIDLog []LogEntry
+
+func (log DIDLog) MarshalJSON() ([]byte, error) {
+	return json.Marshal([]LogEntry(log))
+}
 
 func (log DIDLog) MarshalText() ([]byte, error) {
 	buf := new(bytes.Buffer)
@@ -254,37 +258,6 @@ func renderPathTemplate(didTemplate, scid string) string {
 // for testing purposes
 var timeFunc = time.Now
 
-// encodePubKey encodes a public key to a multicodec format
-func encodePubKey(pubKey crypto.PublicKey) (string, error) {
-	var pubkeyBytes []byte
-	var keyCodec multicodec.Code
-	switch pubKey := pubKey.(type) {
-	case *ecdsa.PublicKey:
-		pubkeyBytes = elliptic.MarshalCompressed(pubKey.Curve, pubKey.X, pubKey.Y)
-		switch pubKey.Curve {
-		case elliptic.P256():
-			keyCodec = multicodec.P256Pub
-		case elliptic.P384():
-			keyCodec = multicodec.P384Pub
-		default:
-			return "", fmt.Errorf("unsupported curve: %s", pubKey.Curve.Params().Name)
-		}
-	case ed25519.PublicKey:
-		pubkeyBytes = pubKey
-		keyCodec = multicodec.Ed25519Pub
-	default:
-		return "", fmt.Errorf("unsupported public key type: %T", pubKey)
-	}
-
-	buf := make([]byte, binary.MaxVarintLen64)
-	n := binary.PutUvarint(buf, uint64(keyCodec))
-	b := buf[:n]
-
-	multiCodecKey := append(b, pubkeyBytes...)
-
-	return multibase.Encode(multibase.Base58BTC, multiCodecKey)
-}
-
 func ParseLog(b []byte) (DIDLog, error) {
 	log := DIDLog{}
 	err := log.UnmarshalText(b)
@@ -327,7 +300,7 @@ func (doc *DIDDocument) ReplaceSCIDPlaceholder(scid string) error {
 // Create creates a new DIDLog with a single log entry
 // It calculates the SCID of the first log entry and replaces the placeholder in the path template
 // It signs the entry with the provided signer
-func Create(doc DIDDocument, signer crypto.Signer, nextKeyhashes []string) (DIDLog, error) {
+func Create(doc DIDDocument, signer crypto.Signer, nextKeyhashes ...NextKeyHash) (DIDLog, error) {
 	params, err := NewInitialParams([]crypto.PublicKey{signer.Public()}, nextKeyhashes)
 	if err != nil {
 		return nil, err
@@ -372,7 +345,7 @@ func Create(doc DIDDocument, signer crypto.Signer, nextKeyhashes []string) (DIDL
 	return DIDLog{le}, nil
 }
 
-func Update(log DIDLog, params LogParams, modifiedDoc map[string]interface{}, signer crypto.Signer) (DIDLog, error) {
+func (log DIDLog) Update(params LogParams, modifiedDoc map[string]interface{}, signer crypto.Signer) (DIDLog, error) {
 	fmt.Print("\n\nUpdate:\n\n")
 
 	currentDoc, err := log.Document()
@@ -522,11 +495,11 @@ func (log DIDLog) calculateVersionId(version int) (versionId, error) {
 	switch version {
 	case 0:
 		entry = log[0]
-		prevVersionId = versionId{Version: 0, Hash: EntryHash("{SCID}")}
+		prevVersionId = versionId{Version: 0, Hash: entryHash("{SCID}")}
 		entry.Params.Scid = "{SCID}"
 	case 1:
 		entry = log[0]
-		prevVersionId = versionId{Version: 0, Hash: EntryHash(entry.Params.Scid)}
+		prevVersionId = versionId{Version: 0, Hash: entryHash(entry.Params.Scid)}
 	default:
 		entry = log[version-1]
 		prevVersionId = log[version-2].VersionId
@@ -536,7 +509,7 @@ func (log DIDLog) calculateVersionId(version int) (versionId, error) {
 	if err != nil {
 		return versionId{}, fmt.Errorf("failed to calculate entry hash: %w", err)
 	}
-	return versionId{Version: version, Hash: EntryHash(calculatedVersionHash)}, nil
+	return versionId{Version: version, Hash: entryHash(calculatedVersionHash)}, nil
 }
 
 func (log DIDLog) Verify() error {
@@ -594,12 +567,24 @@ func (log DIDLog) Verify() error {
 				return fmt.Errorf("invalid scid")
 			}
 		} else {
-			if log[:i].Deactivated() {
+			if log[:i].IsDeactivated() {
 				return fmt.Errorf("invalid entry after deactivation")
 			}
 			// check if the scid is the same as the first one
 			if entry.Params.Scid != "" && entry.Params.Scid != scid {
 				return fmt.Errorf("scid cannot be changed")
+			}
+
+			// check if new updatekeys are added and if they are listed in the nextKeyHashes
+			if len(entry.Params.UpdateKeys) > 0 {
+				for _, updateKey := range entry.Params.UpdateKeys {
+					for j, keyHash := range log[:i].getNextKeyHahses() {
+						err := keyHash.VerifyUpdateKey(updateKey)
+						if err != nil && j == len(log[:i].getNextKeyHahses())-1 {
+							return fmt.Errorf("update key must be in the active nextKeyHashes list")
+						}
+					}
+				}
 			}
 		}
 
@@ -610,7 +595,7 @@ func (log DIDLog) Verify() error {
 		if i == 0 {
 			prevEntry = entry
 			// first entry uses the scid instead of the previous version hash
-			prevVersionID = versionId{Hash: EntryHash(entry.Params.Scid)}
+			prevVersionID = versionId{Hash: entryHash(entry.Params.Scid)}
 		} else {
 			prevEntry = log[i-1]
 			prevVersionID = prevEntry.VersionId
@@ -620,15 +605,15 @@ func (log DIDLog) Verify() error {
 		if err != nil {
 			return fmt.Errorf("failed to calculate entry hash: %w", err)
 		}
-		if entry.VersionId.Hash != EntryHash(calculatedVersionHash) {
+		if entry.VersionId.Hash != entryHash(calculatedVersionHash) {
 			return fmt.Errorf("failed to verify entry hash")
 		}
 		challenge := entry.VersionId.String()
-		updateKeys := log[:i].UpdateKeys()
+		updateKeys := log[:i].getUpdateKeys()
 
 		// first entry uses its own update keys
 		if i == 0 {
-			updateKeys = log[:i+1].UpdateKeys()
+			updateKeys = log[:i+1].getUpdateKeys()
 		}
 
 		for _, proof := range entry.Proof {
@@ -647,7 +632,7 @@ func (log DIDLog) Verify() error {
 	return nil
 }
 
-func Deactivate(log DIDLog, signer crypto.Signer) (DIDLog, error) {
+func (log DIDLog) Deactivate(signer crypto.Signer) (DIDLog, error) {
 	fmt.Print("\n\nDeactivate:\n\n")
 
 	if len(log) == 0 {
@@ -655,17 +640,17 @@ func Deactivate(log DIDLog, signer crypto.Signer) (DIDLog, error) {
 	}
 
 	// check if the log is already deactivated
-	if log.Deactivated() {
+	if log.IsDeactivated() {
 		return nil, fmt.Errorf("log is already deactivated")
 	}
 
 	// create a new log entry
 	params := LogParams{Deactivated: true}
 
-	return Update(log, params, nil, signer)
+	return log.Update(params, nil, signer)
 }
 
-func (log DIDLog) UpdateKeys() []string {
+func (log DIDLog) getUpdateKeys() []string {
 	if len(log) == 0 {
 		return nil
 	}
@@ -676,14 +661,33 @@ func (log DIDLog) UpdateKeys() []string {
 			return nil
 		}
 
-		if len(entry.Params.UpdateKeys) > 0 {
+		// if the entry key is defined, overwrite the updateKeys. Even if it is empty!
+		if entry.Params.UpdateKeys != nil {
 			updateKeys = entry.Params.UpdateKeys
 		}
 	}
 	return updateKeys
 }
 
-func (log DIDLog) Deactivated() bool {
+func (log DIDLog) getNextKeyHahses() []NextKeyHash {
+	if len(log) == 0 {
+		return nil
+	}
+	var nextKeyHashes []NextKeyHash
+
+	for _, entry := range log {
+		if entry.Params.Deactivated {
+			return nil
+		}
+
+		if entry.Params.NextKeyHashes != nil {
+			nextKeyHashes = entry.Params.NextKeyHashes
+		}
+	}
+	return nextKeyHashes
+}
+
+func (log DIDLog) IsDeactivated() bool {
 	if len(log) == 0 {
 		return false
 	}

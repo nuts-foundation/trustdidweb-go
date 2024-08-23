@@ -30,15 +30,15 @@ doc["service"] = []interface{}{
 }
 
 // Update the log
-log, _ = Update(log, LogParams{}, newDoc, signer)
-
-// get the updated document:
-updatedDoc, err := log.Document()
+log, _ = log.Update(LogParams{}, doc, signer)
 
 // verify the log
 if err := log.Verify(); err != nil {
     panic(err)
 }
+
+// get the updated document:
+doc, err := log.Document()
 
 // Marshal the log to a did-log-file which can be hosted on a n well-known endpoint
 logFile, _ := log.MarshalText()
@@ -55,10 +55,9 @@ if err != nil {
 
 Following thing are still missing (not in a particular order):
 
+- Support for DID portability
 - Better test coverage
-- Deactivation of a log
 - Add a resolver
-- Validation of pre-rotations keys/hashes
 - Generation of a `did:web` document from a log
 - Cleanup of the code
 - Support for witness signatures

@@ -106,7 +106,7 @@ func (entry LogEntry) calculateEntryHash(prevVersionId versionId) (string, error
 
 	fmt.Printf("logentry: %s\n", b)
 
-	entryHash := NewEntryHash(b, uint64(multicodec.Sha2_256))
+	entryHash := newEntryHash(b, uint64(multicodec.Sha2_256))
 	if entryHash == "" {
 		return "", fmt.Errorf("failed to calculate entry hash")
 	}

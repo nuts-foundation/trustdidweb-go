@@ -2,6 +2,7 @@ package trustdidweb
 
 import (
 	"crypto"
+	"crypto/ed25519"
 	"testing"
 
 	"github.com/go-json-experiment/json"
@@ -9,13 +10,42 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestNextKeyHash(t *testing.T) {
+	t.Run("verify a nextKeyHash", func(t *testing.T) {
+		nextKeyJWK := `{"crv":"Ed25519","kty":"OKP","x":"WBKH7GNqRzMnBJLBx0HZ8rBltvBf4O_KaGmOn7T7-Q8","d":"8WHbfpB9GutxXGPFlgahz-7EjZedliXOtz61fzbzOrg"}`
+		nextKeyHash := NextKeyHash(`QmSUEFKzVUqDBVhErbC8aWvdaRFATpiHXqVHg9ZNcsyqPQ`)
+		nextPrivKey := parseJWKPrivateKey(t, nextKeyJWK).(ed25519.PrivateKey)
+		nextPubKey := nextPrivKey.Public()
+
+		err := nextKeyHash.VerifyPublicKey(nextPubKey)
+		assert.NoError(t, err)
+
+		calculatedKeyHash, err := NewNextKeyHash(nextPubKey)
+		assert.NoError(t, err)
+		assert.Equal(t, nextKeyHash, calculatedKeyHash)
+	})
+}
+
+func TestEncodePubKey(t *testing.T) {
+	t.Run("ok", func(t *testing.T) {
+		pubKey := testVector1.signer(t).Public()
+		encodedKey, err := NewUpdateKey(pubKey)
+		assert.NoError(t, err)
+
+		entry := LogEntry{}
+		err = entry.UnmarshalJSONL([]byte(testVector1.log[0]))
+		require.NoError(t, err)
+		assert.Equal(t, entry.Params.UpdateKeys[0], encodedKey)
+	})
+}
+
 func TestNewInitialParams(t *testing.T) {
 	t.Run("ok", func(t *testing.T) {
 		signer, err := NewSigner(CRYPTO_SUITE_EDDSA_JCS_2022)
 		require.NoError(t, err)
 		pubKeys := []crypto.PublicKey{signer.Public()}
 
-		nextKeyHashes := []string{"hash1", "hash2"}
+		nextKeyHashes := []NextKeyHash{"hash1", "hash2"}
 
 		params, err := NewInitialParams(pubKeys, nextKeyHashes)
 		assert.NoError(t, err)
@@ -24,8 +54,8 @@ func TestNewInitialParams(t *testing.T) {
 		assert.True(t, params.Prerotation, "prerotation should be true")
 		assert.Empty(t, params.Cryptosuite, "for the eddsa-jcs-2022, crypto suite is not set")
 		assert.Equal(t, 1, len(params.UpdateKeys))
-		assert.Equal(t, "hash1", params.NextKeyHashes[0])
-		assert.Equal(t, "hash2", params.NextKeyHashes[1])
+		assert.Equal(t, NextKeyHash("hash1"), params.NextKeyHashes[0])
+		assert.Equal(t, NextKeyHash("hash2"), params.NextKeyHashes[1])
 	})
 
 	t.Run("ok - edsa-jcs-2019 should set the cryptosuite", func(t *testing.T) {
@@ -52,7 +82,7 @@ func TestNewInitialParams(t *testing.T) {
 		signer, err := NewSigner(CRYPTO_SUITE_EDDSA_JCS_2022)
 		require.NoError(t, err)
 		pubKeys := []crypto.PublicKey{signer.Public()}
-		params, err := NewInitialParams(pubKeys, []string{})
+		params, err := NewInitialParams(pubKeys, []NextKeyHash{})
 		assert.NoError(t, err)
 		assert.False(t, params.Prerotation, "prerotation should be false")
 		assert.Empty(t, params.NextKeyHashes)
@@ -81,10 +111,35 @@ func TestNewInitialParams(t *testing.T) {
 }
 
 func TestLogParams_MarshalJSON(t *testing.T) {
-	t.Run("empty params", func(t *testing.T) {
+	t.Run("empty params returns an empty JSON object", func(t *testing.T) {
 		params := LogParams{}
 		data, err := json.Marshal(params)
 		require.NoError(t, err)
 		require.JSONEq(t, `{}`, string(data))
+	})
+
+	t.Run("an empty updateKeys array must be marshalled but empty", func(t *testing.T) {
+		params := LogParams{UpdateKeys: []string{}}
+		data, err := json.Marshal(params)
+		require.NoError(t, err)
+		assert.JSONEq(t, `{"updateKeys":[]}`, string(data))
+	})
+}
+
+func TestLogParams_UnmarshalJSON(t *testing.T) {
+	t.Run("empty JSON object unmarshals to empty params", func(t *testing.T) {
+		params := LogParams{}
+		err := json.Unmarshal([]byte(`{}`), &params)
+		require.NoError(t, err)
+		assert.True(t, params.UpdateKeys == nil)
+	})
+
+	t.Run("an empty updateKeys array must be defined but empty", func(t *testing.T) {
+		params := LogParams{}
+		err := json.Unmarshal([]byte(`{"updateKeys":[]}`), &params)
+		require.NoError(t, err)
+		assert.Empty(t, params.UpdateKeys)
+		assert.True(t, len(params.UpdateKeys) == 0)
+		assert.False(t, params.UpdateKeys == nil)
 	})
 }
