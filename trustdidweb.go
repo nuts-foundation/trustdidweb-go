@@ -9,11 +9,11 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/sha512"
-	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"hash"
+	"io/ioutil"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -247,7 +247,7 @@ func (log DIDLog) Document() (DIDDocument, error) {
 }
 
 func logger() *slog.Logger {
-	return slog.Default().WithGroup("trustdidweb")
+	return slog.New(slog.NewTextHandler(ioutil.Discard, &slog.HandlerOptions{Level: slog.LevelDebug}))
 }
 
 func renderPathTemplate(didTemplate, scid string) string {
@@ -346,8 +346,6 @@ func Create(doc DIDDocument, signer crypto.Signer, nextKeyhashes ...NextKeyHash)
 }
 
 func (log DIDLog) Update(params LogParams, modifiedDoc map[string]interface{}, signer crypto.Signer) (DIDLog, error) {
-	fmt.Print("\n\nUpdate:\n\n")
-
 	currentDoc, err := log.Document()
 	if err != nil {
 		return DIDLog{}, err
@@ -412,8 +410,6 @@ func NewSigner(cryptoSuite string) (crypto.Signer, error) {
 
 // buildProof creates a proof for the latest entry in the log
 func (log DIDLog) buildProof(signer crypto.Signer) (Proof, error) {
-	fmt.Print("\n\nbuildProof:\n\n")
-
 	entry := log[len(log)-1]
 
 	verificationMethod, err := verificationMethodFromSigner(signer)
@@ -464,17 +460,11 @@ func (log DIDLog) buildProof(signer crypto.Signer) (Proof, error) {
 		return Proof{}, fmt.Errorf("failed to hash entry: %w", err)
 	}
 
-	fmt.Printf("input length: %d\n", len(input))
-
-	fmt.Printf("input: %s\n", base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(input))
-
 	// sign the entry
 	signature, err := signer.Sign(rand.Reader, input, signerOpts)
 	if err != nil {
 		return Proof{}, fmt.Errorf("failed to sign entry: %w", err)
 	}
-
-	fmt.Printf("signature: %s\n", base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(signature))
 
 	encodedProof, err := multibase.Encode(multibase.Base58BTC, signature)
 	if err != nil {
@@ -487,9 +477,6 @@ func (log DIDLog) buildProof(signer crypto.Signer) (Proof, error) {
 
 // calculateEntryHash calculates the hash of the
 func (log DIDLog) calculateVersionId(version int) (versionId, error) {
-	fmt.Print("\ncalculateVersionId:\n")
-	fmt.Printf("version: %d\n", version)
-
 	var entry LogEntry
 	var prevVersionId versionId
 	switch version {
@@ -513,7 +500,6 @@ func (log DIDLog) calculateVersionId(version int) (versionId, error) {
 }
 
 func (log DIDLog) Verify() error {
-	fmt.Print("\n\nVerify:\n\n")
 	// empty log should not be considered valid
 	if len(log) == 0 {
 		return fmt.Errorf("empty log")
@@ -522,14 +508,11 @@ func (log DIDLog) Verify() error {
 	var scid string
 
 	for i, entry := range log {
-		fmt.Printf("\nentry i: %d\n", i)
-
 		if i+1 != entry.VersionId.Version {
 			return fmt.Errorf("invalid log sequence number, expected: %d, got: %d", i+1, entry.VersionId.Version)
 		}
 
 		if i == 0 {
-			fmt.Printf("verify scid first entry\n")
 			if entry.Params.Scid == "" {
 				return fmt.Errorf("missing scid in the first log entry params")
 			}
@@ -633,8 +616,6 @@ func (log DIDLog) Verify() error {
 }
 
 func (log DIDLog) Deactivate(signer crypto.Signer) (DIDLog, error) {
-	fmt.Print("\n\nDeactivate:\n\n")
-
 	if len(log) == 0 {
 		return nil, fmt.Errorf("empty log")
 	}

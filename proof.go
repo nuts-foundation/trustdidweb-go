@@ -104,7 +104,6 @@ func (proof Proof) Verify(challenge string, updateKeys []string, doc DIDDocument
 		return fmt.Errorf("unsupported proof purpose: %s", proof.ProofPurpose)
 	}
 	if proof.Challenge != challenge {
-		fmt.Printf("proof.challenge: %s, expected: %s\n", proof.Challenge, challenge)
 		return fmt.Errorf("challenge mismatch")
 	}
 
@@ -149,8 +148,6 @@ func (proof Proof) Verify(challenge string, updateKeys []string, doc DIDDocument
 	if err != nil {
 		return fmt.Errorf("failed to decode proof value: %w", err)
 	}
-	fmt.Printf("signature: %x\n", signature)
-	fmt.Printf("signature length: %d\n", len(signature))
 
 	switch pubKey := pubKey.(type) {
 	case *ecdsa.PublicKey:
@@ -213,13 +210,9 @@ func hashLogVersion(document map[string]interface{}, proof Proof, hashfn hash.Ha
 	hashfn.Write(optionData)
 	optionsHash := hashfn.Sum(nil)
 
-	fmt.Printf("dataHash: %x\n", dataHash)
-	fmt.Printf("optionsHash: %x\n", optionsHash)
-
 	logger().Debug("hash", "data", base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(dataHash[:]))
 	logger().Debug("hash", "options", base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(optionsHash[:]))
 
 	input := append(dataHash[:], optionsHash[:]...)
-	fmt.Printf("input: %x\n", input)
 	return input, nil
 }
