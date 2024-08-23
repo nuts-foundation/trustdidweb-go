@@ -1,5 +1,7 @@
 # trustdidweb-go
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/nuts-foundation/trustdidweb-go.svg)](https://pkg.go.dev/github.com/nuts-foundation/trustdidweb-go)
+
 This repository contains a highly experimental and unstable implementation of the [Trust DID Web DID-Method specification](https://bcgov.github.io/trustdidweb/).
 
 Its purpose now is to get some hands-on experience with the specification. If we find it useful, we might continue to develop it further into a more stable implementation.
