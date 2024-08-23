@@ -336,20 +336,35 @@ func TestDIDLogVerify(t *testing.T) {
 	t.Run("nok - invalid version hash", func(t *testing.T) {
 		entry := LogEntry{
 			VersionId: versionId{Version: 1, Hash: "invalid"},
-			Params:    LogParams{Scid: "QmNTqTWceqobjeFFAMdJRTJCbtPfhVRuCYrvC3bTV1RYh1"},
-			DocState:  docState{Value: map[string]interface{}{"foo": "bar"}},
+			Params:    LogParams{Scid: "QmTU7s1npMgXEmhbFtFsMb3roqvyAKEqHDmyJbBDtbAst1"},
+			DocState:  docState{Value: map[string]interface{}{"id": "did:tdw:QmTU7s1npMgXEmhbFtFsMb3roqvyAKEqHDmyJbBDtbAst1:example.com"}},
 		}
 
 		err := DIDLog{entry}.Verify()
 		assert.EqualError(t, err, "failed to verify entry hash")
 	})
 
+	t.Run("nok - DID Document id has the wrong scid", func(t *testing.T) {
+		entry := LogEntry{VersionId: versionId{Version: 0}, DocState: docState{Value: map[string]interface{}{"id": "did:tdw:{SCID}:example.com"}}}
+		version, err := DIDLog{entry}.calculateVersionId(0)
+		require.NoError(t, err)
+		entry.VersionId = version
+		entry.Params.Scid = string(version.Hash)
+		entry.DocState.Value["id"] = "did:tdw:wrong-scid:example.com"
+		version, err = DIDLog{entry}.calculateVersionId(1)
+		require.NoError(t, err)
+		entry.VersionId = version
+		err = DIDLog{entry}.Verify()
+		assert.EqualError(t, err, "DID Document id does not match the params.scid")
+	})
+
 	t.Run("nok - invalid scid", func(t *testing.T) {
-		entry := LogEntry{VersionId: versionId{Version: 0}, DocState: docState{Value: map[string]interface{}{"foo": "bar"}}}
+		entry := LogEntry{VersionId: versionId{Version: 0}, DocState: docState{Value: map[string]interface{}{"id": "did:tdw:{SCID}:example.com"}}}
 		version, err := DIDLog{entry}.calculateVersionId(0)
 		require.NoError(t, err)
 		entry.VersionId = version
 		entry.Params.Scid = "invalid"
+		entry.DocState.Value["id"] = "did:tdw:invalid:example.com"
 		version, err = DIDLog{entry}.calculateVersionId(1)
 		require.NoError(t, err)
 		entry.VersionId = version
@@ -368,7 +383,7 @@ func TestDIDLogVerify(t *testing.T) {
 		entry.VersionId = version
 		entry.Proof = []Proof{{}}
 		err = DIDLog{entry}.Verify()
-		assert.EqualError(t, err, "missing docstate value in first log entry")
+		assert.EqualError(t, err, "DID Document id field missing")
 	})
 
 	t.Run("multiple entries", func(t *testing.T) {

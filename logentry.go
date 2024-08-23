@@ -56,6 +56,13 @@ func (l *logLine) ToLogEntry() (LogEntry, error) {
 	return entry, nil
 }
 
+func (l LogEntry) copy() LogEntry {
+	newEntry := LogEntry{}
+	entryBytes, _ := json.Marshal(l)
+	_ = json.Unmarshal(entryBytes, &newEntry)
+	return newEntry
+}
+
 func (l *LogEntry) UnmarshalJSONL(b []byte) error {
 	line := logLine{}
 	// line := []interface{}{}

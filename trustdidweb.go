@@ -521,14 +521,14 @@ func (log DIDLog) Verify() error {
 			scid = entry.Params.Scid
 
 			// create a copy
-			var initEntry LogEntry
-			entryBytes, err := json.Marshal(entry)
-			if err != nil {
-				return fmt.Errorf("failed to marshal entry: %w", err)
+			initEntry := entry.copy()
+
+			id, ok := initEntry.DocState.Value["id"].(string)
+			if !ok {
+				return fmt.Errorf("DID Document id field missing")
 			}
-			err = json.Unmarshal(entryBytes, &initEntry)
-			if err != nil {
-				return fmt.Errorf("failed to unmarshal entry: %w", err)
+			if !strings.HasPrefix(id, fmt.Sprintf("did:tdw:%s", entry.Params.Scid)) {
+				return fmt.Errorf("DID Document id does not match the params.scid")
 			}
 
 			// replace all instances of the scid with the placeholder
