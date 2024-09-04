@@ -2,7 +2,7 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/nuts-foundation/trustdidweb-go.svg)](https://pkg.go.dev/github.com/nuts-foundation/trustdidweb-go)
 
-This repository contains a highly experimental and unstable implementation of the [Trust DID Web DID-Method specification](https://bcgov.github.io/trustdidweb/).
+This repository contains a highly experimental and unstable implementation of the [Trust DID Web DID-Method specification](https://identity.foundation/trustdidweb).
 
 Its purpose now is to get some hands-on experience with the specification. If we find it useful, we might continue to develop it further into a more stable implementation.
 
@@ -55,7 +55,7 @@ if err != nil {
 
 ## TODO
 
-Following thing are still missing (not in a particular order):
+Following things are still missing (not in a particular order):
 
 - Support for DID portability
 - Better test coverage
