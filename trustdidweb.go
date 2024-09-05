@@ -135,25 +135,6 @@ func newEntryHash(data []byte, hashType uint64) entryHash {
 	return entryHash([]byte(hash))
 }
 
-func (s entryHash) Verify(data []byte) error {
-	digest, hashType, err := s.Digest()
-	if err != nil {
-		return err
-	}
-
-	switch multicodec.Code(hashType) {
-	case multicodec.Sha2_256:
-		calculated := sha256.Sum256(data)
-		if !bytes.Equal(digest, calculated[:]) {
-			return fmt.Errorf("digest mismatch")
-		}
-	default:
-		return fmt.Errorf("unsupported hash type")
-	}
-
-	return nil
-}
-
 type DIDLog []LogEntry
 
 func (log DIDLog) MarshalJSON() ([]byte, error) {
@@ -505,29 +486,31 @@ func (log DIDLog) Verify() error {
 		return fmt.Errorf("empty log")
 	}
 
-	var scid string
+	params := LogParams{}
+	var err error
+	var prevParams LogParams
 
 	for i, entry := range log {
 		if i+1 != entry.VersionId.Version {
 			return fmt.Errorf("invalid log sequence number, expected: %d, got: %d", i+1, entry.VersionId.Version)
 		}
 
+		params, err = params.Apply(entry.Params)
+		if err != nil {
+			return err
+		}
+
 		if i == 0 {
-			if entry.Params.Scid == "" {
-				return fmt.Errorf("missing scid in the first log entry params")
-			}
-
-			// set the scid
-			scid = entry.Params.Scid
-
 			// create a copy
 			initEntry := entry.copy()
+
+			prevParams = params
 
 			id, ok := initEntry.DocState.Value["id"].(string)
 			if !ok {
 				return fmt.Errorf("DID Document id field missing")
 			}
-			if !strings.HasPrefix(id, fmt.Sprintf("did:tdw:%s", entry.Params.Scid)) {
+			if !strings.HasPrefix(id, fmt.Sprintf("did:tdw:%s", params.Scid)) {
 				return fmt.Errorf("DID Document id does not match the params.scid")
 			}
 
@@ -536,7 +519,7 @@ func (log DIDLog) Verify() error {
 			if err != nil {
 				return fmt.Errorf("failed to marshal docstate: %w", err)
 			}
-			initialDoc := strings.ReplaceAll(string(docBytes), scid, "{SCID}")
+			initialDoc := strings.ReplaceAll(string(docBytes), params.Scid, "{SCID}")
 			err = json.Unmarshal([]byte(initialDoc), &initEntry.DocState.Value)
 			if err != nil {
 				return fmt.Errorf("failed to unmarshal docstate: %w", err)
@@ -546,28 +529,8 @@ func (log DIDLog) Verify() error {
 			if err != nil {
 				return fmt.Errorf("failed to calculate scid: %w", err)
 			}
-			if scid != string(calculatedVersionId.Hash) {
+			if params.Scid != string(calculatedVersionId.Hash) {
 				return fmt.Errorf("invalid scid")
-			}
-		} else {
-			if log[:i].IsDeactivated() {
-				return fmt.Errorf("invalid entry after deactivation")
-			}
-			// check if the scid is the same as the first one
-			if entry.Params.Scid != "" && entry.Params.Scid != scid {
-				return fmt.Errorf("scid cannot be changed")
-			}
-
-			// check if new updatekeys are added and if they are listed in the nextKeyHashes
-			if len(entry.Params.UpdateKeys) > 0 {
-				for _, updateKey := range entry.Params.UpdateKeys {
-					for j, keyHash := range log[:i].getNextKeyHahses() {
-						err := keyHash.VerifyUpdateKey(updateKey)
-						if err != nil && j == len(log[:i].getNextKeyHahses())-1 {
-							return fmt.Errorf("update key must be in the active nextKeyHashes list")
-						}
-					}
-				}
 			}
 		}
 
@@ -578,7 +541,7 @@ func (log DIDLog) Verify() error {
 		if i == 0 {
 			prevEntry = entry
 			// first entry uses the scid instead of the previous version hash
-			prevVersionID = versionId{Hash: entryHash(entry.Params.Scid)}
+			prevVersionID = versionId{Hash: entryHash(params.Scid)}
 		} else {
 			prevEntry = log[i-1]
 			prevVersionID = prevEntry.VersionId
@@ -592,12 +555,6 @@ func (log DIDLog) Verify() error {
 			return fmt.Errorf("failed to verify entry hash")
 		}
 		challenge := entry.VersionId.String()
-		updateKeys := log[:i].getUpdateKeys()
-
-		// first entry uses its own update keys
-		if i == 0 {
-			updateKeys = log[:i+1].getUpdateKeys()
-		}
 
 		for _, proof := range entry.Proof {
 			doc, err := log[:i+1].Document()
@@ -605,11 +562,12 @@ func (log DIDLog) Verify() error {
 				return err
 			}
 
-			err = proof.Verify(challenge, updateKeys, doc)
+			err = proof.Verify(challenge, prevParams.UpdateKeys, doc)
 			if err != nil {
 				return err
 			}
 		}
+		prevParams = params
 	}
 
 	return nil
@@ -621,7 +579,11 @@ func (log DIDLog) Deactivate(signer crypto.Signer) (DIDLog, error) {
 	}
 
 	// check if the log is already deactivated
-	if log.IsDeactivated() {
+	deactivated, err := log.IsDeactivated()
+	if err != nil {
+		return nil, err
+	}
+	if deactivated {
 		return nil, fmt.Errorf("log is already deactivated")
 	}
 
@@ -631,51 +593,26 @@ func (log DIDLog) Deactivate(signer crypto.Signer) (DIDLog, error) {
 	return log.Update(params, nil, signer)
 }
 
-func (log DIDLog) getUpdateKeys() []string {
+func (log DIDLog) Params() (LogParams, error) {
 	if len(log) == 0 {
-		return nil
+		return LogParams{}, fmt.Errorf("empty log")
 	}
-	var updateKeys []string
 
-	for _, entry := range log {
-		if entry.Params.Deactivated {
-			return nil
-		}
-
-		// if the entry key is defined, overwrite the updateKeys. Even if it is empty!
-		if entry.Params.UpdateKeys != nil {
-			updateKeys = entry.Params.UpdateKeys
+	var err error
+	params := log[0].Params
+	for _, entry := range log[1:] {
+		params, err = params.Apply(entry.Params)
+		if err != nil {
+			return LogParams{}, err
 		}
 	}
-	return updateKeys
+	return params, nil
 }
 
-func (log DIDLog) getNextKeyHahses() []NextKeyHash {
-	if len(log) == 0 {
-		return nil
+func (log DIDLog) IsDeactivated() (bool, error) {
+	params, err := log.Params()
+	if err != nil {
+		return false, err
 	}
-	var nextKeyHashes []NextKeyHash
-
-	for _, entry := range log {
-		if entry.Params.Deactivated {
-			return nil
-		}
-
-		if entry.Params.NextKeyHashes != nil {
-			nextKeyHashes = entry.Params.NextKeyHashes
-		}
-	}
-	return nextKeyHashes
-}
-
-func (log DIDLog) IsDeactivated() bool {
-	if len(log) == 0 {
-		return false
-	}
-	for _, entry := range log {
-		if entry.Params.Deactivated {
-			return true
-		}
-	}
-	return false
+	return params.Deactivated, nil
 }

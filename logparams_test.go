@@ -52,19 +52,9 @@ func TestNewInitialParams(t *testing.T) {
 		assert.Equal(t, TDWMethodv03, params.Method)
 		assert.Equal(t, "{SCID}", params.Scid)
 		assert.True(t, params.Prerotation, "prerotation should be true")
-		assert.Empty(t, params.Cryptosuite, "for the eddsa-jcs-2022, crypto suite is not set")
 		assert.Equal(t, 1, len(params.UpdateKeys))
 		assert.Equal(t, NextKeyHash("hash1"), params.NextKeyHashes[0])
 		assert.Equal(t, NextKeyHash("hash2"), params.NextKeyHashes[1])
-	})
-
-	t.Run("ok - edsa-jcs-2019 should set the cryptosuite", func(t *testing.T) {
-		signer, err := NewSigner(CRYPTO_SUITE_ECDSA_JCS_2019)
-		require.NoError(t, err)
-		pubKeys := []crypto.PublicKey{signer.Public()}
-		params, err := NewInitialParams(pubKeys, nil)
-		assert.NoError(t, err)
-		assert.Equal(t, CRYPTO_SUITE_ECDSA_JCS_2019, params.Cryptosuite)
 	})
 
 	t.Run("ok - multiple public key types", func(t *testing.T) {
@@ -141,5 +131,22 @@ func TestLogParams_UnmarshalJSON(t *testing.T) {
 		assert.Empty(t, params.UpdateKeys)
 		assert.True(t, len(params.UpdateKeys) == 0)
 		assert.False(t, params.UpdateKeys == nil)
+	})
+}
+
+func TestLogParams_copy(t *testing.T) {
+	t.Run("copy returns a deep copy of the params", func(t *testing.T) {
+		params := LogParams{
+			Method:        "method",
+			Scid:          "scid",
+			Prerotation:   true,
+			UpdateKeys:    []string{"key1", "key2"},
+			NextKeyHashes: []NextKeyHash{"hash1", "hash2"},
+		}
+		paramsCopy := params.copy()
+		assert.Equal(t, params, paramsCopy)
+		assert.False(t, &params == &paramsCopy)
+		assert.False(t, &params.UpdateKeys == &paramsCopy.UpdateKeys)
+		assert.False(t, &params.NextKeyHashes == &paramsCopy.NextKeyHashes)
 	})
 }

@@ -56,6 +56,7 @@ func (l *logLine) ToLogEntry() (LogEntry, error) {
 	return entry, nil
 }
 
+// copy returns a deep copy of the log entry
 func (l LogEntry) copy() LogEntry {
 	newEntry := LogEntry{}
 	entryBytes, _ := json.Marshal(l)
@@ -95,7 +96,9 @@ func (l LogEntry) MarshalJSONL() ([]byte, error) {
 	return b, nil
 }
 
-func (entry LogEntry) calculateEntryHash(prevVersionId versionId) (string, error) {
+// calculateEntryHash calculates the hash of the log entry.
+// Since during calculation of the entryHash the hash of the previous entry is used, this version must be provided.
+func (entry LogEntry) calculateEntryHash(prevVersionId versionId) (entryHash, error) {
 	// a hash is calulated over the entry without proof
 	entry.Proof = nil
 
@@ -111,5 +114,5 @@ func (entry LogEntry) calculateEntryHash(prevVersionId versionId) (string, error
 		return "", fmt.Errorf("failed to calculate entry hash")
 	}
 
-	return string(entryHash), nil
+	return entryHash, nil
 }

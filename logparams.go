@@ -25,7 +25,6 @@ type LogParams struct {
 	Scid          string        `json:"scid,omitzero"`
 	UpdateKeys    []string      `json:"updateKeys,omitzero"`
 	Portable      bool          `json:"portable,omitzero"`
-	Cryptosuite   string        `json:"cryptosuite,omitempty"`
 	Prerotation   bool          `json:"prerotation,omitzero"`
 	NextKeyHashes []NextKeyHash `json:"nextKeyHashes,omitzero"`
 	// Witness       Witness
@@ -81,7 +80,6 @@ func (keyHash NextKeyHash) VerifyPublicKey(pubKey crypto.PublicKey) error {
 	if n <= 0 {
 		return fmt.Errorf("invalid multibase key type header")
 	}
-	fmt.Printf("length: %d\n", length)
 
 	multikey, err := NewUpdateKey(pubKey)
 	if err != nil {
@@ -170,6 +168,7 @@ func NewInitialParams(pubKeys []crypto.PublicKey, nextKeyHashes []NextKeyHash) (
 		return LogParams{}, fmt.Errorf("at least one public key is required")
 	}
 
+	// check if the provided public keys are of the same type
 	updateKeys := make([]string, len(pubKeys))
 	var err error
 	cryptoSuite := ""
@@ -202,16 +201,117 @@ func NewInitialParams(pubKeys []crypto.PublicKey, nextKeyHashes []NextKeyHash) (
 		prerotation = true
 	}
 
-	if cryptoSuite == CRYPTO_SUITE_EDDSA_JCS_2022 {
-		// for the eddsa-jcs-2022, crypto suite is not set, since it is the default
-		cryptoSuite = ""
-	}
-
 	return LogParams{
 		Method:        TDWMethodv03,
 		Scid:          "{SCID}",
 		Prerotation:   prerotation,
 		UpdateKeys:    updateKeys,
-		NextKeyHashes: nextKeyHashes,
-		Cryptosuite:   cryptoSuite}, nil
+		NextKeyHashes: nextKeyHashes}, nil
+}
+
+func (p LogParams) copy() LogParams {
+	params := p
+	params.UpdateKeys = make([]string, len(p.UpdateKeys))
+	copy(params.UpdateKeys, p.UpdateKeys)
+
+	params.NextKeyHashes = make([]NextKeyHash, len(p.NextKeyHashes))
+	copy(params.NextKeyHashes, p.NextKeyHashes)
+
+	return params
+}
+
+func (p LogParams) Verify() error {
+	if p.Method != TDWMethodv03 {
+		return fmt.Errorf("method must be %s", TDWMethodv03)
+	}
+
+	if p.Scid == "" {
+		return fmt.Errorf("scid is required")
+	}
+
+	return nil
+}
+
+// Apply returns a new LogParams with the updated values
+func (p LogParams) Apply(newParams LogParams) (LogParams, error) {
+	if p.Deactivated {
+		return LogParams{}, fmt.Errorf("log is deactivated")
+	}
+
+	isEmpty := p.Scid == "" && p.Method == "" && len(p.UpdateKeys) == 0 && len(p.NextKeyHashes) == 0 && !p.Prerotation && !p.Portable && !p.Deactivated && p.TTL == 0
+
+	var res LogParams
+
+	if isEmpty {
+		res = newParams
+	} else {
+		res = p.copy()
+
+		if newParams.Method != "" {
+			res.Method = newParams.Method
+		}
+
+		if newParams.Scid != "" && p.Scid != newParams.Scid {
+			return LogParams{}, fmt.Errorf("scid cannot be changed")
+		}
+
+		if p.Portable != newParams.Portable {
+			return LogParams{}, fmt.Errorf("portable cannot be changed")
+		}
+
+		if !p.Prerotation && newParams.Prerotation {
+			return LogParams{}, fmt.Errorf("prerotation cannot be enabled after the first log entry")
+		}
+
+		if newParams.Deactivated {
+			res.Deactivated = true
+		}
+
+		if newParams.TTL > 0 {
+			res.TTL = newParams.TTL
+		}
+
+		if len(newParams.UpdateKeys) > 0 {
+			for _, updateKey := range newParams.UpdateKeys {
+				for j, keyHash := range p.NextKeyHashes {
+					err := keyHash.VerifyUpdateKey(updateKey)
+					// if no match and last element in the list: return error
+					if err != nil && j == len(p.NextKeyHashes)-1 {
+						return LogParams{}, fmt.Errorf("update key must be in the active nextKeyHashes list")
+					}
+				}
+			}
+		}
+
+		if newParams.UpdateKeys != nil {
+			// UpdateKeys is defined, does it contain new keys?
+			for _, updateKey := range newParams.UpdateKeys {
+				found := false
+				for _, oldUpdateKey := range p.UpdateKeys {
+					if updateKey == oldUpdateKey {
+						// found, check next key
+						found = true
+						break
+					}
+				}
+				if !found {
+					// new key found, so nextKeyHashes must also be updated
+					if newParams.NextKeyHashes == nil {
+						return LogParams{}, fmt.Errorf("nextKeyHashes must be defined when new keys are added")
+					}
+				}
+			}
+			res.UpdateKeys = newParams.UpdateKeys
+		}
+
+		if newParams.NextKeyHashes != nil {
+			res.NextKeyHashes = newParams.NextKeyHashes
+		}
+	}
+
+	if err := res.Verify(); err != nil {
+		return LogParams{}, fmt.Errorf("invalid log parameters: %w", err)
+	}
+	return res, nil
+
 }

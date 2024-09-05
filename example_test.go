@@ -133,7 +133,11 @@ func ExampleDIDLog_Deactivate() {
 		log.Fatal(err)
 	}
 
-	fmt.Printf("Is log deactivated: %t\n", didLog.IsDeactivated())
+	params, err := didLog.Params()
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("Is log deactivated: %t\n", params.Deactivated)
 
 	// Output:
 	// Is log deactivated: true
