@@ -1,17 +1,40 @@
 package main
 
 import (
-	"encoding/json"
+	"flag"
 	"fmt"
 	"log/slog"
 	"os"
 	"reflect"
 
+	"github.com/go-json-experiment/json"
 	"github.com/go-json-experiment/json/jsontext"
 	tdw "github.com/nuts-foundation/trustdidweb-go"
 )
 
 func main() {
+	genSet := flag.NewFlagSet("generate", flag.ExitOnError)
+	genTests := genSet.Bool("tests", false, "generate tests")
+
+	if len(os.Args) < 2 {
+		fmt.Println("provide one of following subcommands: generate or example")
+		os.Exit(1)
+	}
+	switch os.Args[1] {
+	case genSet.Name():
+		genSet.Parse(os.Args[2:])
+		if *genTests {
+			GenerateTests()
+		}
+	case "example":
+		example()
+	default:
+		fmt.Println("provide a subcommand: generate or example")
+		os.Exit(1)
+	}
+}
+
+func example() {
 	// Set the log level to debug and writer to stdout
 	logHandler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})
 	slog.SetDefault(slog.New(logHandler))
