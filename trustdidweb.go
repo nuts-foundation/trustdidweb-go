@@ -141,6 +141,7 @@ func (log DIDLog) MarshalJSON() ([]byte, error) {
 	return json.Marshal([]LogEntry(log))
 }
 
+// MarshalText returns the log in the JSON Lines format
 func (log DIDLog) MarshalText() ([]byte, error) {
 	buf := new(bytes.Buffer)
 	for i, entry := range log {

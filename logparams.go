@@ -313,5 +313,4 @@ func (p LogParams) Apply(newParams LogParams) (LogParams, error) {
 		return LogParams{}, fmt.Errorf("invalid log parameters: %w", err)
 	}
 	return res, nil
-
 }
