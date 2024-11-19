@@ -221,8 +221,8 @@ func (p LogParams) copy() LogParams {
 }
 
 func (p LogParams) Verify() error {
-	if p.Method != TDWMethodv03 {
-		return fmt.Errorf("method must be %s", TDWMethodv03)
+	if p.Method != TDWMethodv04 {
+		return fmt.Errorf("method must be %s", TDWMethodv04)
 	}
 
 	if p.Scid == "" {

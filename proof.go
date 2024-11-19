@@ -6,12 +6,11 @@ import (
 	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/sha256"
-	"crypto/sha512"
 	"encoding/base64"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"hash"
-	"math/big"
 	"slices"
 	"strings"
 
@@ -27,7 +26,7 @@ type Proof struct {
 	VerificationMethod verificationMethod `json:"verificationMethod"`
 	Created            string             `json:"created"`
 	ProofPurpose       string             `json:"proofPurpose"`
-	Challenge          string             `json:"challenge"`
+	Challenge          string             `json:"challenge,omitempty"`
 	ProofValue         string             `json:"proofValue,omitempty"`
 }
 
@@ -96,6 +95,95 @@ func verificationMethodFromSigner(signer crypto.Signer) (verificationMethod, err
 	return verificationMethod(fmt.Sprintf("did:key:%s#%s", encodedKey, encodedKey)), nil
 }
 
+var ErrProofParssing = errors.New("ProofParsingErr")
+
+func VerifyDataIntegrityProof(docBytes []byte, expectedProofPurpose string, _ string) error {
+	doc := map[string]interface{}{}
+
+	if err := json.Unmarshal(docBytes, &doc); err != nil {
+		return fmt.Errorf("failed to unmarshal document: %w", err)
+	}
+
+	type docWithProof struct {
+		Proof []Proof `json:"proof"`
+	}
+
+	dwp := docWithProof{}
+
+	if err := json.Unmarshal(docBytes, &dwp); err != nil {
+		return fmt.Errorf("failed to unmarshal proof: %w", err)
+	}
+
+	proof := dwp.Proof[0]
+
+	if proof.Type != "DataIntegrityProof" {
+		return fmt.Errorf("unsupported proof type: %s", proof.Type)
+	}
+
+	if proof.VerificationMethod == "" || proof.ProofPurpose == "" {
+		return fmt.Errorf("missing fields VerificationMethod or ProofPurpose")
+	}
+
+	if expectedProofPurpose != "" && expectedProofPurpose != proof.ProofPurpose {
+		return errors.New("proof.ProofPurpose does not match expected proofPurpose")
+	}
+
+	delete(doc, "proof")
+
+	var hashfn hash.Hash
+
+	keyType, pubKey, err := proof.VerificationMethod.PublicKey()
+	if err != nil {
+		return fmt.Errorf("failed to extract public key from verification method: %w", err)
+	}
+
+	// set hash function based on cryptosuite and key type
+	switch proof.Cryptosuite {
+	// case CRYPTO_SUITE_ECDSA_JCS_2019:
+	// 	switch multicodec.Code(keyType) {
+	// 	case multicodec.P256Pub:
+	// 		hashfn = sha256.New()
+	// 	case multicodec.P384Pub:
+	// 		hashfn = sha512.New384()
+	// 	default:
+	// 		return fmt.Errorf("incompatible key type '%s' for cryptosuite '%s'", multicodec.Code(keyType), proof.Cryptosuite)
+	// 	}
+	case CRYPTO_SUITE_EDDSA_JCS_2022:
+		if multicodec.Code(keyType) != multicodec.Ed25519Pub {
+			return fmt.Errorf("incompatible key type '%s' for cryptosuite '%s'", multicodec.Code(keyType), proof.Cryptosuite)
+		}
+		hashfn = sha256.New()
+	default:
+		return fmt.Errorf("unsupported cryptosuite: %s", proof.Cryptosuite)
+	}
+
+	input, err := hashLogVersion(doc, proof, hashfn)
+	if err != nil {
+		return err
+	}
+
+	proofValue := proof.ProofValue
+	_, signature, err := multibase.Decode(proofValue)
+	if err != nil {
+		return fmt.Errorf("failed to decode proof value: %w", err)
+	}
+
+	switch pubKey := pubKey.(type) {
+	case ed25519.PublicKey:
+		logger().Debug("ed25519 signature verification")
+
+		if !ed25519.Verify(pubKey, input, signature) {
+			fmt.Printf("Failed to verify signature:, pubKey %x, input: %x, signature: %x\n", []byte(pubKey), input, signature)
+
+			return fmt.Errorf("invalid signature")
+		}
+	default:
+		return fmt.Errorf("unsupported public key type: %T", pubKey)
+	}
+
+	return nil
+}
+
 func (proof Proof) Verify(challenge string, updateKeys []string, doc DIDDocument) error {
 	if proof.Type != "DataIntegrityProof" {
 		return fmt.Errorf("unsupported proof type: %s", proof.Type)
@@ -103,9 +191,9 @@ func (proof Proof) Verify(challenge string, updateKeys []string, doc DIDDocument
 	if proof.ProofPurpose != "authentication" {
 		return fmt.Errorf("unsupported proof purpose: %s", proof.ProofPurpose)
 	}
-	if proof.Challenge != challenge {
-		return fmt.Errorf("challenge mismatch")
-	}
+	// if proof.Challenge != challenge {
+	// 	return fmt.Errorf("challenge mismatch")
+	// }
 
 	updateKey := proof.VerificationMethod.toUpdateKey()
 	if !slices.Contains(updateKeys, updateKey) {
@@ -120,15 +208,15 @@ func (proof Proof) Verify(challenge string, updateKeys []string, doc DIDDocument
 
 	// set hash function based on cryptosuite and key type
 	switch proof.Cryptosuite {
-	case CRYPTO_SUITE_ECDSA_JCS_2019:
-		switch multicodec.Code(keyType) {
-		case multicodec.P256Pub:
-			hashfn = sha256.New()
-		case multicodec.P384Pub:
-			hashfn = sha512.New384()
-		default:
-			return fmt.Errorf("incompatible key type '%s' for cryptosuite '%s'", multicodec.Code(keyType), proof.Cryptosuite)
-		}
+	// case CRYPTO_SUITE_ECDSA_JCS_2019:
+	// 	switch multicodec.Code(keyType) {
+	// 	case multicodec.P256Pub:
+	// 		hashfn = sha256.New()
+	// 	case multicodec.P384Pub:
+	// 		hashfn = sha512.New384()
+	// 	default:
+	// 		return fmt.Errorf("incompatible key type '%s' for cryptosuite '%s'", multicodec.Code(keyType), proof.Cryptosuite)
+	// 	}
 	case CRYPTO_SUITE_EDDSA_JCS_2022:
 		if multicodec.Code(keyType) != multicodec.Ed25519Pub {
 			return fmt.Errorf("incompatible key type '%s' for cryptosuite '%s'", multicodec.Code(keyType), proof.Cryptosuite)
@@ -150,29 +238,33 @@ func (proof Proof) Verify(challenge string, updateKeys []string, doc DIDDocument
 	}
 
 	switch pubKey := pubKey.(type) {
-	case *ecdsa.PublicKey:
-		// a acdsa signature can be either 2 concatenated integers or asn1 encoded
-		// This code checks if the signature valid asn1 encoded:
-		// _, err = parseSig(signature, false)
-		// if err != nil {
-		// 	return fmt.Errorf("failed to parse signature: %w", err)
-		// }
-		// split the signature in half to get the r and s values
-		r := big.NewInt(0).SetBytes(signature[:len(signature)/2])
-		s := big.NewInt(0).SetBytes(signature[len(signature)/2:])
-
-		// try both type of signature encoding
-		if !ecdsa.Verify(pubKey, input, r, s) {
-			// try the other way around:
-			r = big.NewInt(0).SetBytes(signature[len(signature)/2:])
-			s = big.NewInt(0).SetBytes(signature[:len(signature)/2])
-			if !ecdsa.Verify(pubKey, input, r, s) &&
-				!ecdsa.VerifyASN1(pubKey, input, signature) {
-				return fmt.Errorf("invalid signature")
-			}
-		}
+	// case *ecdsa.PublicKey:
+	// a acdsa signature can be either 2 concatenated integers or asn1 encoded
+	// This code checks if the signature valid asn1 encoded:
+	// _, err = parseSig(signature, false)
+	// if err != nil {
+	// 	return fmt.Errorf("failed to parse signature: %w", err)
+	// }
+	// split the signature in half to get the r and s values
+	// r := big.NewInt(0).SetBytes(signature[:len(signature)/2])
+	// s := big.NewInt(0).SetBytes(signature[len(signature)/2:])
+	//
+	// // try both type of signature encoding
+	// if !ecdsa.Verify(pubKey, input, r, s) {
+	// 	// try the other way around:
+	// 	r = big.NewInt(0).SetBytes(signature[len(signature)/2:])
+	// 	s = big.NewInt(0).SetBytes(signature[:len(signature)/2])
+	// 	if !ecdsa.Verify(pubKey, input, r, s) &&
+	// 		!ecdsa.VerifyASN1(pubKey, input, signature) {
+	// 		return fmt.Errorf("invalid signature")
+	// 	}
+	// }
 	case ed25519.PublicKey:
+		logger().Debug("ed25519 signature verification")
+
 		if !ed25519.Verify(pubKey, input, signature) {
+			fmt.Printf("Failed to verify signature:, pubKey %x, input: %x, signature: %x\n", []byte(pubKey), input, signature)
+
 			return fmt.Errorf("invalid signature")
 		}
 	default:
@@ -199,6 +291,9 @@ func hashLogVersion(document map[string]interface{}, proof Proof, hashfn hash.Ha
 		return nil, fmt.Errorf("failed to marshal value: %w", err)
 	}
 	(*jsontext.Value)(&docData).Canonicalize()
+
+	fmt.Printf("canonicalized did doc: %s\n", string(docData))
+	fmt.Printf("canonicalized proof: %s\n", string(optionData))
 
 	logger().Debug("canonicalized did doc", "value", string(docData))
 	logger().Debug("canonicalized proof", "value", string(optionData))

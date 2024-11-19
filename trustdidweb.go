@@ -13,15 +13,13 @@ import (
 	"errors"
 	"fmt"
 	"hash"
-	"io/ioutil"
+	"io"
 	"log/slog"
 	"strconv"
 	"strings"
 	"time"
 
-	jsonpatchApplier "github.com/evanphx/json-patch/v5"
 	"github.com/go-json-experiment/json"
-	jsonpatchCreator "github.com/mattbaird/jsonpatch"
 	b58 "github.com/mr-tron/base58/base58"
 	"github.com/multiformats/go-multibase"
 	"github.com/multiformats/go-multicodec"
@@ -29,6 +27,7 @@ import (
 
 const TDWMethodv1 = "did:tdw:1"
 const TDWMethodv03 = "did:tdw:0.3"
+const TDWMethodv04 = "did:tdw:0.4"
 
 const CRYPTO_SUITE_ECDSA_JCS_2019 = "ecdsa-jcs-2019"
 const CRYPTO_SUITE_EDDSA_JCS_2022 = "eddsa-jcs-2022"
@@ -165,7 +164,8 @@ func (log *DIDLog) UnmarshalText(b []byte) error {
 			continue
 		}
 		entry := LogEntry{}
-		if err := entry.UnmarshalJSONL(line); err != nil {
+		if err := json.Unmarshal(line, &entry); err != nil {
+			// if err := entry.UnmarshalJSONL(line); err != nil {
 			return err
 		}
 		*log = append(*log, entry)
@@ -179,57 +179,60 @@ func (log DIDLog) Document() (DIDDocument, error) {
 		return nil, fmt.Errorf("empty log")
 	}
 
-	var docBytes []byte
-	var err error
+	lastEntry := log[len(log)-1]
+	return lastEntry.DocState, nil
 
-	for i, entry := range log {
-		// first entry contains a value
-		if i == 0 {
-			if entry.DocState.Value == nil {
-				return nil, fmt.Errorf("missing docstate value in first log entry")
-			}
-			docBytes, err = json.Marshal(entry.DocState.Value)
-			if err != nil {
-				return nil, fmt.Errorf("failed to marshal value of the first log entry: %w", err)
-			}
-		} else {
-			// try a full document first
-			if entry.DocState.Value != nil {
-				docBytes, err = json.Marshal(entry.DocState.Value)
-				if err != nil {
-					return nil, fmt.Errorf("failed to marshal value: %w", err)
-				}
-			} else if entry.DocState.Patch != nil {
-				patchBytes, err := json.Marshal(entry.DocState.Patch)
-				if err != nil {
-					return nil, fmt.Errorf("failed to marshal patch: %w", err)
-				}
-				patch, err := jsonpatchApplier.DecodePatch(patchBytes)
-				if err != nil {
-					return nil, fmt.Errorf("failed to decode patch: %w", err)
-				}
-				docBytes, err = patch.Apply(docBytes)
-				if err != nil {
-					return nil, fmt.Errorf("failed to apply patch: %w", err)
-				}
-			} else {
-				return nil, fmt.Errorf("missing value or patch in log entry")
-			}
-		}
-	}
-
-	logger().Debug("document", "doc", string(docBytes))
-
-	doc := DIDDocument{}
-	if err := json.Unmarshal(docBytes, &doc); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal document: %w", err)
-	}
-
-	return doc, nil
+	// var docBytes []byte
+	// var err error
+	//
+	// for i, entry := range log {
+	// 	// first entry contains a value
+	// 	if i == 0 {
+	// 		if entry.DocState.Value == nil {
+	// 			return nil, fmt.Errorf("missing docstate value in first log entry")
+	// 		}
+	// 		docBytes, err = json.Marshal(entry.DocState.Value)
+	// 		if err != nil {
+	// 			return nil, fmt.Errorf("failed to marshal value of the first log entry: %w", err)
+	// 		}
+	// 	} else {
+	// 		// try a full document first
+	// 		if entry.DocState.Value != nil {
+	// 			docBytes, err = json.Marshal(entry.DocState.Value)
+	// 			if err != nil {
+	// 				return nil, fmt.Errorf("failed to marshal value: %w", err)
+	// 			}
+	// 		} else if entry.DocState.Patch != nil {
+	// 			patchBytes, err := json.Marshal(entry.DocState.Patch)
+	// 			if err != nil {
+	// 				return nil, fmt.Errorf("failed to marshal patch: %w", err)
+	// 			}
+	// 			patch, err := jsonpatchApplier.DecodePatch(patchBytes)
+	// 			if err != nil {
+	// 				return nil, fmt.Errorf("failed to decode patch: %w", err)
+	// 			}
+	// 			docBytes, err = patch.Apply(docBytes)
+	// 			if err != nil {
+	// 				return nil, fmt.Errorf("failed to apply patch: %w", err)
+	// 			}
+	// 		} else {
+	// 			return nil, fmt.Errorf("missing value or patch in log entry")
+	// 		}
+	// 	}
+	// }
+	//
+	// logger().Debug("document", "doc", string(docBytes))
+	//
+	// doc := DIDDocument{}
+	// if err := json.Unmarshal(docBytes, &doc); err != nil {
+	// 	return nil, fmt.Errorf("failed to unmarshal document: %w", err)
+	// }
+	//
+	// return doc, nil
 }
 
 func logger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(ioutil.Discard, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	return slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug}))
 }
 
 func renderPathTemplate(didTemplate, scid string) string {
@@ -240,6 +243,7 @@ func renderPathTemplate(didTemplate, scid string) string {
 // for testing purposes
 var timeFunc = time.Now
 
+// ParseLog parses a log in the JSON Lines format, it does not verify the log
 func ParseLog(b []byte) (DIDLog, error) {
 	log := DIDLog{}
 	err := log.UnmarshalText(b)
@@ -289,7 +293,7 @@ func Create(doc DIDDocument, signer crypto.Signer, nextKeyhashes ...NextKeyHash)
 	}
 
 	le := LogEntry{
-		DocState:    docState{Value: doc},
+		DocState:    doc,
 		Params:      params,
 		VersionTime: timeFunc(),
 	}
@@ -306,7 +310,7 @@ func Create(doc DIDDocument, signer crypto.Signer, nextKeyhashes ...NextKeyHash)
 	logger().Debug("create", "scid", scid)
 
 	// replace placeholders with the actual values containing the did string
-	le.DocState.Value.ReplaceSCIDPlaceholder(scid)
+	le.DocState.ReplaceSCIDPlaceholder(scid)
 	le.Params.Scid = scid
 	le.VersionId = versionId
 
@@ -327,38 +331,38 @@ func Create(doc DIDDocument, signer crypto.Signer, nextKeyhashes ...NextKeyHash)
 	return DIDLog{le}, nil
 }
 
-func (log DIDLog) Update(params LogParams, modifiedDoc map[string]interface{}, signer crypto.Signer) (DIDLog, error) {
-	currentDoc, err := log.Document()
-	if err != nil {
-		return DIDLog{}, err
-	}
+func (log DIDLog) Update(params LogParams, doc map[string]interface{}, signer crypto.Signer) (DIDLog, error) {
+	// currentDoc, err := log.Document()
+	// if err != nil {
+	// 	return DIDLog{}, err
+	// }
 
-	currentDocBytes, err := json.Marshal(currentDoc)
-	if err != nil {
-		return DIDLog{}, err
-	}
+	// currentDocBytes, err := json.Marshal(currentDoc)
+	// if err != nil {
+	// 	return DIDLog{}, err
+	// }
 
-	modifiedDocBytes, err := json.Marshal(modifiedDoc)
-	if err != nil {
-		return DIDLog{}, err
-	}
-
-	patch, err := jsonpatchCreator.CreatePatch(currentDocBytes, modifiedDocBytes)
-	if err != nil {
-		return DIDLog{}, err
-	}
-
-	patchBytes, err := json.Marshal(patch)
-	if err != nil {
-		return DIDLog{}, err
-	}
-
-	logger().Debug("update", "patch", string(patchBytes))
+	// modifiedDocBytes, err := json.Marshal(doc)
+	// if err != nil {
+	// 	return DIDLog{}, err
+	// }
+	//
+	// patch, err := jsonpatchCreator.CreatePatch(currentDocBytes, modifiedDocBytes)
+	// if err != nil {
+	// 	return DIDLog{}, err
+	// }
+	//
+	// patchBytes, err := json.Marshal(patch)
+	// if err != nil {
+	// 	return DIDLog{}, err
+	// }
+	//
+	// logger().Debug("update", "patch", string(patchBytes))
 
 	entry := LogEntry{
 		VersionTime: timeFunc(),
 		Params:      params,
-		DocState:    docState{Patch: patch},
+		DocState:    doc,
 	}
 
 	nextVersion := len(log) + 1
@@ -501,13 +505,14 @@ func (log DIDLog) Verify() error {
 			return err
 		}
 
+		// check the scid based on the hash of the first entry
 		if i == 0 {
 			// create a copy
 			initEntry := entry.copy()
 
 			prevParams = params
 
-			id, ok := initEntry.DocState.Value["id"].(string)
+			id, ok := initEntry.DocState["id"].(string)
 			if !ok {
 				return fmt.Errorf("DID Document id field missing")
 			}
@@ -516,12 +521,12 @@ func (log DIDLog) Verify() error {
 			}
 
 			// replace all instances of the scid with the placeholder
-			docBytes, err := json.Marshal(initEntry.DocState.Value)
+			docBytes, err := json.Marshal(initEntry.DocState)
 			if err != nil {
 				return fmt.Errorf("failed to marshal docstate: %w", err)
 			}
 			initialDoc := strings.ReplaceAll(string(docBytes), params.Scid, "{SCID}")
-			err = json.Unmarshal([]byte(initialDoc), &initEntry.DocState.Value)
+			err = json.Unmarshal([]byte(initialDoc), &initEntry.DocState)
 			if err != nil {
 				return fmt.Errorf("failed to unmarshal docstate: %w", err)
 			}
@@ -555,19 +560,24 @@ func (log DIDLog) Verify() error {
 		if entry.VersionId.Hash != entryHash(calculatedVersionHash) {
 			return fmt.Errorf("failed to verify entry hash")
 		}
-		challenge := entry.VersionId.String()
+		// challenge := entry.VersionId.String()
 
-		for _, proof := range entry.Proof {
-			doc, err := log[:i+1].Document()
-			if err != nil {
-				return err
-			}
+		// for _, proof := range entry.Proof {
+		// doc, err := log[:i+1].Document()
+		// if err != nil {
+		// 	return err
+		// }
 
-			err = proof.Verify(challenge, prevParams.UpdateKeys, doc)
-			if err != nil {
-				return err
-			}
+		// err = proof.Verify(challenge, prevParams.UpdateKeys, doc)
+		entryBytes, err := json.Marshal(entry)
+		if err != nil {
+			return fmt.Errorf("failed to marshal entry: %w", err)
 		}
+		err = VerifyDataIntegrityProof(entryBytes, "authentication", prevParams.UpdateKeys[0])
+		if err != nil {
+			return err
+		}
+		// }
 		prevParams = params
 	}
 

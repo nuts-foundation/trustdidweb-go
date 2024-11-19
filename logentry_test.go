@@ -17,7 +17,7 @@ func TestLogEntry_copy(t *testing.T) {
 		assert.Equal(t, entry, entryCopy)
 		assert.False(t, &entry == &entryCopy)
 
-		entry.DocState.Value["id"] = "new-id"
-		assert.NotEqual(t, entry.DocState.Value["id"], entryCopy.DocState.Value["id"])
+		entry.DocState["id"] = "new-id"
+		assert.NotEqual(t, entry.DocState["id"], entryCopy.DocState["id"])
 	})
 }

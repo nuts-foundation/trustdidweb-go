@@ -337,7 +337,7 @@ func TestDIDLogVerify(t *testing.T) {
 		entry := LogEntry{
 			VersionId: versionId{Version: 1, Hash: "invalid"},
 			Params:    LogParams{Scid: "QmZeyi3xEU6jRm1n15QxBCmBFiajQd2rEJC9YsK5FbJt7V", Method: "did:tdw:0.3"},
-			DocState:  docState{Value: map[string]interface{}{"id": "did:tdw:QmZeyi3xEU6jRm1n15QxBCmBFiajQd2rEJC9YsK5FbJt7V:example.com"}},
+			DocState:  map[string]interface{}{"id": "did:tdw:QmZeyi3xEU6jRm1n15QxBCmBFiajQd2rEJC9YsK5FbJt7V:example.com"},
 		}
 
 		err := DIDLog{entry}.Verify()
@@ -345,12 +345,12 @@ func TestDIDLogVerify(t *testing.T) {
 	})
 
 	t.Run("nok - DID Document id has the wrong scid", func(t *testing.T) {
-		entry := LogEntry{VersionId: versionId{Version: 0}, DocState: docState{Value: map[string]interface{}{"id": "did:tdw:{SCID}:example.com"}}, Params: LogParams{Method: TDWMethodv03}}
+		entry := LogEntry{VersionId: versionId{Version: 0}, DocState: map[string]interface{}{"id": "did:tdw:{SCID}:example.com"}, Params: LogParams{Method: TDWMethodv03}}
 		version, err := DIDLog{entry}.calculateVersionId(0)
 		require.NoError(t, err)
 		entry.VersionId = version
 		entry.Params.Scid = string(version.Hash)
-		entry.DocState.Value["id"] = "did:tdw:wrong-scid:example.com"
+		entry.DocState["id"] = "did:tdw:wrong-scid:example.com"
 		version, err = DIDLog{entry}.calculateVersionId(1)
 		require.NoError(t, err)
 		entry.VersionId = version
@@ -361,7 +361,7 @@ func TestDIDLogVerify(t *testing.T) {
 	t.Run("nok - invalid scid", func(t *testing.T) {
 		entry := LogEntry{
 			VersionId: versionId{Version: 0},
-			DocState:  docState{Value: map[string]interface{}{"id": "did:tdw:{SCID}:example.com"}},
+			DocState:  map[string]interface{}{"id": "did:tdw:{SCID}:example.com"},
 			Params:    LogParams{Method: TDWMethodv03},
 		}
 		version, err := DIDLog{entry}.calculateVersionId(0)
@@ -369,7 +369,7 @@ func TestDIDLogVerify(t *testing.T) {
 		entry.VersionId = version
 		// change the scid to an invalid value
 		entry.Params.Scid = "invalid"
-		entry.DocState.Value["id"] = "did:tdw:invalid:example.com"
+		entry.DocState["id"] = "did:tdw:invalid:example.com"
 		version, err = DIDLog{entry}.calculateVersionId(1)
 		require.NoError(t, err)
 		entry.VersionId = version
@@ -649,7 +649,7 @@ func testLogEntry1(t *testing.T) LogEntry {
 			UpdateKeys:    []string{"z82LkqR25TU88tztBEiFydNf4fUPn8oWBANckcmuqgonz9TAbK9a7WGQ5dm7jyqyRMpaRAe"},
 			NextKeyHashes: []NextKeyHash{"enkkrohe5ccxyc7zghic6qux5inyzthg2tqka4b57kvtorysc3aa"},
 		},
-		DocState: docState{Value: doc},
+		DocState: doc,
 	}
 }
 
@@ -672,13 +672,11 @@ func logEntryTestVector1(t *testing.T) LogEntry {
 			UpdateKeys:    []string{"z82LkvR3CBNkb9tUVps4GhGpNvEVP6vWzdwgGwQbA1iYoZwd7m1F1hSvkJFSe6sWci7JiXc"},
 			NextKeyHashes: []NextKeyHash{"QmcbM5bppyT4yyaL35TQQJ2XdSrSNAhH5t6f4ZcuyR4VSv"},
 		},
-		DocState: docState{
-			Value: map[string]interface{}{
-				"@context": []interface{}{
-					"https://www.w3.org/ns/did/v1", "https://w3id.org/security/multikey/v1",
-				},
-				"id": "did:tdw:Qma6mc1qZw3NqxwX6SB5GPQYzP4pGN2nXD15Jwi4bcDBKu:domain.example",
+		DocState: map[string]interface{}{
+			"@context": []interface{}{
+				"https://www.w3.org/ns/did/v1", "https://w3id.org/security/multikey/v1",
 			},
+			"id": "did:tdw:Qma6mc1qZw3NqxwX6SB5GPQYzP4pGN2nXD15Jwi4bcDBKu:domain.example",
 		},
 		Proof: []Proof{{
 			Type:               "DataIntegrityProof",
@@ -719,6 +717,39 @@ func TestLogEntryUnmarshalJSONL(t *testing.T) {
 
 func TestParseLog(t *testing.T) {
 
+	t.Run("ok - parse example v1", func(t *testing.T) {
+		rawLog, err := os.ReadFile("testdata/example-v1.jsonl")
+		require.NoError(t, err)
+
+		log, err := ParseLog(rawLog)
+		require.NoError(t, err)
+
+		assert.Len(t, log, 1)
+
+		entry := log[0]
+		assert.Equal(t, "1-QmQq6Kg4ZZ1p49znzxnWmes4LkkWgMWLrnrfPre8UD56bz", entry.VersionId.String())
+		assert.Equal(t, "2024-09-26T23:22:26Z", entry.VersionTime.Format(time.RFC3339))
+
+		params, err := log.Params()
+		require.NoError(t, err)
+
+		assert.True(t, params.Prerotation)
+		assert.Equal(t, params.Scid, "QmfGEUAcMpzo25kF2Rhn8L5FAXysfGnkzjwdKoNPi615XQ")
+		assert.Contains(t, params.UpdateKeys, "z6MkhbNRN2Q9BaY9TvTc2K3izkhfVwgHiXL7VWZnTqxEvc3R")
+		assert.Contains(t, params.NextKeyHashes, NextKeyHash("QmXC3vvStVVzCBHRHGUsksGxn6BNmkdETXJGDBXwNSTL33"))
+		assert.Equal(t, params.Method, TDWMethodv04)
+
+		expectedDoc := DIDDocument(map[string]interface{}{
+			"@context": []interface{}{"https://www.w3.org/ns/did/v1"},
+			"id":       "did:tdw:QmfGEUAcMpzo25kF2Rhn8L5FAXysfGnkzjwdKoNPi615XQ:domain.example",
+		})
+		actualDoc, err := log.Document()
+		require.NoError(t, err)
+		assert.Equal(t, expectedDoc, actualDoc)
+
+		assert.NoError(t, log.Verify())
+	})
+
 	t.Run("ok - parse a logline", func(t *testing.T) {
 		log, err := ParseLog([]byte(LogLineTestVector1))
 		require.NoError(t, err)
@@ -748,7 +779,7 @@ func testLogEntry2(t *testing.T) LogEntry {
 			UpdateKeys:    []string{"z82LkvR3CBNkb9tUVps4GhGpNvEVP6vWzdwgGwQbA1iYoZwd7m1F1hSvkJFSe6sWci7JiXc"},
 			NextKeyHashes: []NextKeyHash{"QmcbM5bppyT4yyaL35TQQJ2XdSrSNAhH5t6f4ZcuyR4VSv"},
 		},
-		DocState: docState{Value: doc},
+		DocState: doc,
 	}
 }
 

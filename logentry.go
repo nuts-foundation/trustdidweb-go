@@ -10,11 +10,11 @@ import (
 )
 
 type LogEntry struct {
-	VersionId   versionId `json:"versionId"`
-	VersionTime time.Time `json:"versionTime,format:RFC3339"`
-	Params      LogParams `json:"params"`
-	DocState    docState  `json:"docState,omitempty"`
-	Proof       []Proof   `json:"proof,omitempty"`
+	VersionId   versionId   `json:"versionId"`
+	VersionTime time.Time   `json:"versionTime,format:RFC3339"`
+	Params      LogParams   `json:"parameters"`
+	DocState    DIDDocument `json:"state,omitempty"`
+	Proof       []Proof     `json:"proof,omitempty"`
 }
 
 // logLine is an intermidiate representation of a log entry for JSON marshalling
@@ -82,13 +82,13 @@ func (l *LogEntry) UnmarshalJSONL(b []byte) error {
 
 // MarshalJSONL returns the JSON-line representation of the log entry
 func (l LogEntry) MarshalJSONL() ([]byte, error) {
-	line := []interface{}{l.VersionId, l.VersionTime.Format(time.RFC3339), l.Params, l.DocState}
+	// line := []interface{}{l.VersionId, l.VersionTime.Format(time.RFC3339), l.Params, l.DocState}
 
-	if len(l.Proof) > 0 {
-		line = append(line, l.Proof)
-	}
-
-	b, err := json.Marshal(line)
+	// if len(l.Proof) > 0 {
+	// 	line = append(line, l.Proof)
+	// }
+	//
+	b, err := json.Marshal(l)
 	if err != nil {
 		return nil, err
 	}
